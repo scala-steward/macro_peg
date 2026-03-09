@@ -1,0 +1,280 @@
+// Ruby grammar for MacroPEG ParserGenerator
+// Target: generate a plain Scala recursive-descent parser that passes 100% of the Ruby corpus
+//
+// This file is processed by ParserGenerator to produce GeneratedRubyParser.scala.
+// Action blocks use pattern matching on the `~` case class generated alongside the parser.
+
+%package com.github.kmizu.macro_peg.ruby;
+%import com.github.kmizu.macro_peg.ruby.RubyAst._;
+%import scala.util.Try;
+%object GeneratedRubyParser;
+%start program;
+
+%preprocess {
+  // Preprocessing pipeline: called automatically before parsing
+  private def stripXOptionPreamble(input: String): String = {
+    val lines = input.split("\n", -1).toList
+    val shebangIndex = lines.indexWhere(_.startsWith("#!"))
+    if (shebangIndex > 0 && lines.take(shebangIndex).exists(_.contains("-x")))
+      lines.drop(shebangIndex + 1).mkString("\n")
+    else input
+  }
+
+  private def stripEndMarker(input: String): String = {
+    if (!input.contains("__END__")) return input
+    val lines = input.split("\n", -1)
+    val endIdx = lines.indexWhere(_ == "__END__")
+    if (endIdx >= 0) lines.take(endIdx).mkString("\n") else input
+  }
+
+  private case class PendingHeredoc(
+    token: String,
+    terminator: String,
+    allowIndentedTerminator: Boolean,
+    lines: scala.collection.mutable.ArrayBuffer[String]
+  )
+
+  private def encodeDoubleQuoted(value: String): String = {
+    val builder = new StringBuilder("\"")
+    var index = 0
+    while (index < value.length) {
+      val c = value.charAt(index)
+      c match {
+        case '\\' => builder.append("\\\\")
+        case '"'  => builder.append("\\\"")
+        case '\n' => builder.append("\\n")
+        case '\r' => builder.append("\\r")
+        case '\t' => builder.append("\\t")
+        case '#' if index + 1 < value.length && value.charAt(index + 1) == '{' =>
+          builder.append("\\#")
+        case _ => builder.append(c)
+      }
+      index += 1
+    }
+    builder.append("\"").toString
+  }
+
+  private def normalizeHeredoc(input: String): String = {
+    if (!input.contains("<<")) return input
+    val heredocPattern =
+      raw"""(?<![\w\)\]\}'\x22\x60\\])<<([~-]?)(?:'([^'\n]*)'|"([^"\n]*)"|`([^`\n]*)`|([A-Za-z_][A-Za-z0-9_]*))""".r
+    val outputLines  = scala.collection.mutable.ArrayBuffer.empty[String]
+    val replacements = scala.collection.mutable.ArrayBuffer.empty[(String, String)]
+    val pending      = scala.collection.mutable.Queue.empty[PendingHeredoc]
+    var nextId       = 0
+    val lines        = input.split("\n", -1)
+    lines.foreach { line =>
+      if (pending.nonEmpty) {
+        val current = pending.front
+        val isTerminator =
+          if (current.allowIndentedTerminator) line.trim == current.terminator
+          else line == current.terminator
+        if (isTerminator) {
+          pending.dequeue()
+          val content =
+            if (current.lines.isEmpty) ""
+            else current.lines.mkString("\n") + "\n"
+          replacements += current.token -> encodeDoubleQuoted(content)
+        } else {
+          current.lines += line
+        }
+        if (pending.isEmpty) outputLines += line
+      } else {
+        var processedLine = line
+        var offset = 0
+        heredocPattern.findAllMatchIn(line).foreach { m =>
+          val indented   = m.group(1) == "-" || m.group(1) == "~"
+          val terminator = Option(m.group(2)).orElse(Option(m.group(3))).orElse(Option(m.group(4))).orElse(Option(m.group(5))).getOrElse("")
+          val token      = s"__MACROPEG_HEREDOC_${nextId}__"
+          nextId += 1
+          processedLine  = processedLine.substring(0, m.start - offset) + token + processedLine.substring(m.end - offset)
+          offset        += (m.end - m.start) - token.length
+          pending.enqueue(PendingHeredoc(token, terminator, indented, scala.collection.mutable.ArrayBuffer.empty))
+        }
+        outputLines += processedLine
+      }
+    }
+    val result = outputLines.mkString("\n")
+    replacements.foldLeft(result) { case (s, (tok, repl)) => s.replace(tok, repl) }
+  }
+
+  // Entry point for the preprocessing pipeline
+  def _preprocess(input: String): String =
+    stripEndMarker(normalizeHeredoc(stripXOptionPreamble(input)))
+};
+
+// ── Higher-order combinators (macro-expanded inline) ──────────────────────
+
+// SepBy0: zero or more `elem` separated by `sep`; returns List
+SepBy0(elem, sep) =
+  (elem (sep elem)*)?
+  => { case Some(h ~ t) => h :: t.asInstanceOf[List[Any]].map({ case _ ~ v => v })
+       case None => List.empty[Any] } ;
+
+// SepBy1: one or more `elem` separated by `sep`; returns List
+SepBy1(elem, sep) =
+  elem (sep elem)*
+  => { case h ~ t => h :: t.asInstanceOf[List[Any]].map({ case _ ~ v => v }) } ;
+
+// ── Lexical primitives ────────────────────────────────────────────────────
+
+@memo
+horizontalSpaceChar =
+  (" " / "\t" / "\r") => { _ => () } ;
+
+@memo
+newlineChar =
+  "\n" => { _ => () } ;
+
+lineContinuation =
+  "\\\n" => { _ => () } ;
+
+comment =
+  "#" (!"\n" .)* => { _ => () } ;
+
+blockComment =
+  "=begin" (!"=end" .)* "=end" => { _ => () } ;
+
+@memo
+inlineSpacing =
+  (horizontalSpaceChar / lineContinuation / comment / blockComment)* => { _ => () } ;
+
+@memo
+spacing =
+  (horizontalSpaceChar / newlineChar / lineContinuation / comment / blockComment)* => { _ => () } ;
+
+spacing1 =
+  (horizontalSpaceChar / comment / blockComment)+ => { _ => () } ;
+
+@memo
+identStart =
+  [a-zA-Z_] => { c => c } ;
+
+@memo
+identCont =
+  [a-zA-Z0-9_] => { c => c } ;
+
+@memo
+identifierRaw =
+  identStart identCont*
+  => { case s ~ cs => s.toString + cs.asInstanceOf[List[Any]].mkString } ;
+
+reservedWord =
+  ( "begin" / "end" / "do" / "if" / "unless" / "while" / "until"
+  / "for" / "in" / "return" / "yield" / "and" / "or" / "not"
+  / "true" / "false" / "nil" / "self" / "class" / "module" / "def"
+  / "then" / "elsif" / "else" / "case" / "when" / "rescue" / "ensure"
+  / "retry" / "break" / "next" / "alias" / "defined?"
+  ) !identCont => { case kw ~ _ => kw } ;
+
+identifierNoSpace =
+  !(reservedWord) identifierRaw
+  => { case _ ~ name => name.asInstanceOf[String] } ;
+
+identifier =
+  identifierNoSpace inlineSpacing
+  => { case name ~ _ => name } ;
+
+// ── Top-level structure ───────────────────────────────────────────────────
+
+program =
+  spacing ~> topLevelStatements <~ spacing
+  => { stmts => Program(stmts.asInstanceOf[List[Statement]]) } ;
+
+statementSep =
+  inlineSpacing (newlineChar / ";") spacing => { _ => () } ;
+
+topLevelStatements =
+  statement (statementSep statement)*
+  => { case first ~ rest =>
+       first.asInstanceOf[Statement] :: rest.asInstanceOf[List[Any]].map({ case _ ~ s => s.asInstanceOf[Statement] }) } ;
+
+// ── Statements (skeleton — exprStatement only for now) ────────────────────
+
+@memo
+statement =
+  exprStatement => { s => s } ;
+
+exprStatement =
+  expr inlineSpacing
+  => { case e ~ _ => ExprStatement(e.asInstanceOf[Expr]) } ;
+
+// ── Expressions ───────────────────────────────────────────────────────────
+
+@memo
+expr =
+  ( floatLiteral
+  / integerLiteral
+  / stringLiteral
+  / singleQuotedStringLiteral
+  / nilLiteral
+  / trueLiteral
+  / falseLiteral
+  / identifierExpr
+  ) => { e => e } ;
+
+// ── Atomic literals ───────────────────────────────────────────────────────
+
+nilLiteral =
+  "nil" !identCont inlineSpacing => { _ => NilLiteral() } ;
+
+trueLiteral =
+  "true" !identCont inlineSpacing => { _ => BoolLiteral(true) } ;
+
+falseLiteral =
+  "false" !identCont inlineSpacing => { _ => BoolLiteral(false) } ;
+
+identifierExpr =
+  identifier => { name => Var(name.asInstanceOf[String]) } ;
+
+// ── Integer literals ──────────────────────────────────────────────────────
+
+decimalDigitsRaw =
+  [0-9] ([0-9_]* [0-9])?
+  => { case d ~ rest =>
+       val tail = rest match {
+         case Some(mid ~ last) => mid.asInstanceOf[List[Any]].mkString + last.toString
+         case None             => ""
+       }
+       d.toString + tail } ;
+
+integerLiteral =
+  decimalDigitsRaw inlineSpacing
+  => { case digits ~ _ => IntLiteral(java.lang.Long.parseLong(digits.asInstanceOf[String].replace("_",""), 10)) } ;
+
+// ── Float literals ────────────────────────────────────────────────────────
+
+floatLiteral =
+  decimalDigitsRaw "." decimalDigitsRaw inlineSpacing
+  => { case ((intPart ~ _) ~ fracPart) ~ _ =>
+       FloatLiteral((intPart.toString + "." + fracPart.toString).toDouble) } ;
+
+// ── String literals (double-quoted, no interpolation yet) ─────────────────
+
+escapedChar =
+  "\\" .
+  => { case _ ~ c => c.toString match {
+       case "n"  => "\n"; case "r"  => "\r"; case "t"  => "\t"
+       case "\\" => "\\"; case "\"" => "\""; case c    => "\\" + c } } ;
+
+plainDoubleQuotedChar =
+  !("\"" / "\\") .
+  => { c => c.toString } ;
+
+stringLiteral =
+  "\"" (escapedChar / plainDoubleQuotedChar)* "\"" inlineSpacing
+  => { case _ ~ chars ~ _ ~ _ => StringLiteral(chars.asInstanceOf[List[String]].mkString) } ;
+
+// ── Single-quoted strings ─────────────────────────────────────────────────
+
+escapedSingleQuotedChar =
+  "\\" ("'" / "\\")
+  => { case _ ~ c => c.toString } ;
+
+plainSingleQuotedChar =
+  !("'" / "\\") .
+  => { c => c.toString } ;
+
+singleQuotedStringLiteral =
+  "'" (escapedSingleQuotedChar / plainSingleQuotedChar)* "'" inlineSpacing
+  => { case _ ~ chars ~ _ ~ _ => StringLiteral(chars.asInstanceOf[List[String]].mkString) } ;

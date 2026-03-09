@@ -32,22 +32,114 @@ object Parser {
       'n' -> '\n', 'r' -> '\r', 't' -> '\t', 'f' -> '\f'
     )
     def root: Parser[Grammar] = GRAMMAR
-    lazy val GRAMMAR: Parser[Grammar] = rule((loc <~ Spacing) ~ Definition.* <~ EndOfFile) ^^ {
-      case pos ~ rules => Grammar(Position(pos.line, pos.column), rules)
+    lazy val GRAMMAR: Parser[Grammar] = rule((loc <~ Spacing) ~ Directive.* ~ Definition.* <~ EndOfFile) ^^ {
+      case pos ~ directives ~ rules => Grammar(Position(pos.line, pos.column), rules, directives)
     }
 
+    // ── Directives ──────────────────────────────────────────────────────────
+    lazy val Directive: Parser[Ast.Directive] = rule(
+      PercentPackage | PercentImport | PercentObject | PercentStart | PercentHelper | PercentPreprocess
+    )
+    private def percentKeyword(kw: String): Parser[Unit] =
+      (chr('%') ~ string(kw) ~ Spacing).map(_ => ())
+    lazy val PercentPackage: Parser[Ast.PackageDirective] = rule(
+      percentKeyword("package") ~> (not(chr(';')) ~> any).* <~ chr(';') <~ Spacing
+    ) ^^ { cs => Ast.PackageDirective(cs.mkString.trim) }
+    lazy val PercentImport: Parser[Ast.ImportDirective] = rule(
+      percentKeyword("import") ~> (not(chr(';')) ~> any).* <~ chr(';') <~ Spacing
+    ) ^^ { cs => Ast.ImportDirective(cs.mkString.trim) }
+    lazy val PercentObject: Parser[Ast.ObjectDirective] = rule(
+      percentKeyword("object") ~> (not(chr(';')) ~> any).* <~ chr(';') <~ Spacing
+    ) ^^ { cs => Ast.ObjectDirective(cs.mkString.trim) }
+    lazy val PercentStart: Parser[Ast.StartDirective] = rule(
+      percentKeyword("start") ~> (not(chr(';')) ~> any).* <~ chr(';') <~ Spacing
+    ) ^^ { cs => Ast.StartDirective(Symbol(cs.mkString.trim)) }
+    lazy val PercentHelper: Parser[Ast.HelperDirective] = rule(
+      percentKeyword("helper") ~> ScalaBlock <~ chr(';').? <~ Spacing
+    ) ^^ { code => Ast.HelperDirective(code) }
+    lazy val PercentPreprocess: Parser[Ast.PreprocessDirective] = rule(
+      percentKeyword("preprocess") ~> ScalaBlock <~ chr(';').? <~ Spacing
+    ) ^^ { code => Ast.PreprocessDirective(code) }
+
+    // ── Balanced-brace Scala code block parser ──────────────────────────────
+    // Returns the inner content (excluding outer braces) as a String
+    lazy val ScalaBlock: Parser[String] = rule(chr('{') ~> ScalaBlockInner <~ chr('}'))
+    lazy val ScalaBlockInner: Parser[String] = ScalaChunk.* ^^ { _.mkString }
+    lazy val ScalaChunk: Parser[String] = rule(
+        ScalaNestedBlock
+      | ScalaTripleQuoteStr
+      | ScalaDoubleQuoteStr
+      | ScalaLineCommentChunk
+      | ScalaBlockCommentChunk
+      | ScalaCharLiteralChunk
+      | (not(chr('}')) ~> any) ^^ { c => c.toString }
+    )
+    lazy val ScalaNestedBlock: Parser[String] = rule(
+      (chr('{') ~ ScalaBlockInner ~ chr('}')) ^^ { case _ ~ inner ~ _ => "{" + inner + "}" }
+    )
+    // Triple-quoted strings: """..."""  (raw""" also matched since raw is just an identifier before """)
+    lazy val ScalaTripleQuoteStr: Parser[String] = rule(
+      (string("\"\"\"") ~ ScalaTripleStrContent.* ~ string("\"\"\"")) ^^ {
+        case _ ~ cs ~ _ => "\"\"\"" + cs.mkString + "\"\"\""
+      }
+    )
+    lazy val ScalaTripleStrContent: Parser[String] = rule(
+      (not(string("\"\"\"")) ~> any) ^^ { c => c.toString }
+    )
+    lazy val ScalaDoubleQuoteStr: Parser[String] = rule(
+      (chr('"') ~ ScalaStrChar.* ~ chr('"')) ^^ { case _ ~ cs ~ _ => "\"" + cs.mkString + "\"" }
+    )
+    lazy val ScalaStrChar: Parser[Char] = rule(
+        (chr('\\') ~ any) ^^ { case _ ~ c => c }
+      | (not(chr('"')) ~> any)
+    )
+    lazy val ScalaLineCommentChunk: Parser[String] = rule(
+      (string("//") ~ (not(EndOfLine) ~> any).*) ^^ { case _ ~ cs => "//" + cs.mkString }
+    )
+    lazy val ScalaBlockCommentChunk: Parser[String] = rule(
+      (string("/*") ~ (not(string("*/")) ~> any).* ~ string("*/")) ^^ { case _ ~ cs ~ _ => "/*" + cs.mkString + "*/" }
+    )
+    lazy val ScalaCharLiteralChunk: Parser[String] = rule(
+      (chr('\'') ~ ScalaCharLitContent ~ chr('\'')) ^^ { case _ ~ c ~ _ => "'" + c + "'" }
+    )
+    lazy val ScalaCharLitContent: Parser[String] = rule(
+        (chr('\\') ~ any) ^^ { case _ ~ c => "\\" + c.toString }
+      | (not(chr('\'')) ~> any) ^^ { _.toString }
+    )
+
+    // ── Annotations ─────────────────────────────────────────────────────────
+    lazy val Annotation: Parser[Ast.Annotation] = rule(
+      chr('@') ~> AnnotationBody <~ Spacing
+    )
+    lazy val AnnotationBody: Parser[Ast.Annotation] = rule(
+      (loc <~ string("memo"))  ^^ { p => Ast.MemoAnnotation(Position(p.line, p.column)) }
+    | (loc <~ string("cut"))   ^^ { p => Ast.CutAnnotation(Position(p.line, p.column)) }
+    | (loc <~ string("void"))  ^^ { p => Ast.VoidAnnotation(Position(p.line, p.column)) }
+    | (loc <~ string("token")) ^^ { p => Ast.TokenAnnotation(Position(p.line, p.column)) }
+    | (loc <~ string("label") <~ chr('(') <~ chr('"')) ~ (not(chr('"')) ~> any).* <~ chr('"') <~ chr(')')
+        ^^ { case p ~ cs => Ast.LabelAnnotation(Position(p.line, p.column), cs.mkString) }
+    | (loc <~ string("guard") <~ chr('(') <~ chr('"')) ~ (not(chr('"')) ~> any).* <~ chr('"') <~ chr(')')
+        ^^ { case p ~ cs => Ast.GuardAnnotation(Position(p.line, p.column), cs.mkString) }
+    )
+
     lazy val Definition: Parser[Rule] =
-      rule(Ident  ~ ((LPAREN ~> Arg.repeat1By(COMMA) <~ RPAREN).? <~ EQ) ~ (Expression <~ SEMI_COLON).commit) ^^ {
-        case name ~ argsOpt ~ body =>
+      rule(Annotation.* ~ Ident ~ (COLON ~> ReturnType).? ~ ((LPAREN ~> Arg.repeat1By(COMMA) <~ RPAREN).? <~ EQ) ~ (Expression <~ SEMI_COLON).commit) ^^ {
+        case anns ~ name ~ retType ~ argsOpt ~ body =>
           val argsWithTypes = argsOpt.getOrElse(List())
           Rule(
             name.pos,
             name.name,
             body,
             argsWithTypes.map(_._1.name),
-            argsWithTypes.map(_._2)
+            argsWithTypes.map(_._2),
+            retType,
+            anns
           )
       }
+
+    lazy val ReturnType: Parser[String] = rule(
+      (not(chr('=')) ~> any).+ ^^ { cs => cs.mkString.trim }
+    )
 
     lazy val Arg: Parser[(Identifier, Option[Type])] = rule(Ident ~ (COLON ~> TypeTree).?) ^^ { case id ~ tpe => (id, tpe)}
 
@@ -67,9 +159,42 @@ object Parser {
     lazy val Expression: Parser[Expression] = rule(Sequencable.repeat1By(SLASH | BAR) ^^ { ns =>
       val x :: xs = ns; xs.foldLeft(x){(a, y) => Alternation(y.pos, a, y)}
     })
-    lazy val Sequencable: Parser[Expression] = rule(Prefix.+ ^^ { ns =>
-      val x :: xs = ns; xs.foldLeft(x){(a, y) => Sequence(y.pos, a, y)}
-    })
+
+    // Sequencable: a chain of elements connected by implicit sequence, <~, or ~>
+    // Optionally followed by an action block: => { scalaCode }
+    lazy val Sequencable: Parser[Expression] = rule(
+      ProjectedSequence ~ ActionSuffix.? ^^ {
+        case body ~ None => body
+        case body ~ Some((apos, code)) => ActionBlock(apos, body, code)
+      }
+    )
+
+    // Action block suffix: => { scalaCode }
+    lazy val ActionSuffix: Parser[(Position, String)] = rule(
+      (loc <~ string("=>") <~ Spacing) ~ (ScalaBlock <~ Spacing) ^^ { case pos ~ code => (Position(pos.line, pos.column), code) }
+    )
+
+    sealed trait ProjOp
+    case object SeqOp extends ProjOp
+    case object LeftProjOp extends ProjOp
+    case object RightProjOp extends ProjOp
+
+    // Parse elements separated by <~, ~>, or implicit juxtaposition
+    lazy val ProjectedSequence: Parser[Expression] = rule(
+      Prefix ~ ProjElement.* ^^ { case first ~ rest =>
+        rest.foldLeft(first) { case (acc, (op, e)) => op match {
+          case SeqOp       => Sequence(e.pos, acc, e)
+          case LeftProjOp  => LeftProject(e.pos, acc, e)
+          case RightProjOp => RightProject(e.pos, acc, e)
+        }}
+      }
+    )
+
+    lazy val ProjElement: Parser[(ProjOp, Expression)] = rule(
+      (loc <~ chr('<') <~ chr('~') <~ Spacing) ~ Prefix ^^ { case _ ~ e => (LeftProjOp, e) }
+    | (loc <~ chr('~') <~ chr('>') <~ Spacing) ~ Prefix ^^ { case _ ~ e => (RightProjOp, e) }
+    | Prefix ^^ { e => (SeqOp, e) }
+    )
     lazy val Prefix: Parser[Expression]     = rule(
       (loc <~ AND) ~ Suffix ^^ { case pos ~ e => AndPredicate(Position(pos.line, pos.column), e) }
     | (loc <~ NOT) ~ Suffix ^^ { case pos ~ e => NotPredicate(Position(pos.line, pos.column), e) }

@@ -23,8 +23,26 @@ object Ast {
  *
     * @param pos position in source file
     * @param rules the list of rules constituting PEG grammar */
-  case class Grammar(pos: Position, rules: List[Rule]) extends HasPosition {
-    def +(newRule: Rule): Grammar = Grammar(pos, rules = newRule::rules)
+  /** Annotation on a rule: @memo, @cut, @void, @token, @label("name"), @guard("name") */
+  sealed trait Annotation { def pos: Position }
+  case class MemoAnnotation(pos: Position) extends Annotation
+  case class CutAnnotation(pos: Position) extends Annotation
+  case class VoidAnnotation(pos: Position) extends Annotation
+  case class TokenAnnotation(pos: Position) extends Annotation
+  case class LabelAnnotation(pos: Position, name: String) extends Annotation
+  case class GuardAnnotation(pos: Position, name: String) extends Annotation
+
+  /** Top-level directive: %package, %import, %object, %start, %helper {...}, %preprocess {...} */
+  sealed trait Directive
+  case class PackageDirective(name: String) extends Directive
+  case class ImportDirective(path: String) extends Directive
+  case class ObjectDirective(name: String) extends Directive
+  case class StartDirective(rule: Symbol) extends Directive
+  case class HelperDirective(scalaCode: String) extends Directive
+  case class PreprocessDirective(scalaCode: String) extends Directive
+
+  case class Grammar(pos: Position, rules: List[Rule], directives: List[Directive] = Nil) extends HasPosition {
+    def +(newRule: Rule): Grammar = Grammar(pos, rules = newRule::rules, directives)
 
     def isWellFormed: Boolean = {
       val ruleMapping = rules.map{r => r.name -> r}.toMap
@@ -44,6 +62,9 @@ object Ast {
         case Identifier(_, name) => env(name) || ruleNames(name)
         case Function(_, args, body) => checkDefined(body, env ++ args.toSet)
         case Debug(_, b) => checkDefined(b, env)
+        case ActionBlock(_, b, _) => checkDefined(b, env)
+        case LeftProject(_, l, r) => checkDefined(l, env) && checkDefined(r, env)
+        case RightProject(_, l, r) => checkDefined(l, env) && checkDefined(r, env)
         case _ => true
       }
       if(!rules.forall(r => checkDefined(r.body, r.args.toSet))) return false
@@ -68,6 +89,9 @@ object Ast {
         case Identifier(_, name) => if(env(name)) true else nullable.getOrElse(name, false)
         case Function(_, args, body) => exprNullable(body, env ++ args.toSet)
         case Debug(_, b) => exprNullable(b, env)
+        case ActionBlock(_, b, _) => exprNullable(b, env)
+        case LeftProject(_, l, r) => exprNullable(l, env) && exprNullable(r, env)
+        case RightProject(_, l, r) => exprNullable(l, env) && exprNullable(r, env)
       }
 
       var changed = true
@@ -93,6 +117,9 @@ object Ast {
         case Call(_, _, args) => args.forall(a => checkRepetition(a, env))
         case Function(_, args, body) => checkRepetition(body, env ++ args.toSet)
         case Debug(_, b) => checkRepetition(b, env)
+        case ActionBlock(_, b, _) => checkRepetition(b, env)
+        case LeftProject(_, l, r) => checkRepetition(l, env) && checkRepetition(r, env)
+        case RightProject(_, l, r) => checkRepetition(l, env) && checkRepetition(r, env)
         case _ => true
       }
       if(!rules.forall(r => checkRepetition(r.body, r.args.toSet))) return false
@@ -119,6 +146,11 @@ object Ast {
           else false
         case Function(_, args, body) => leadsToSelf(sym, body, env ++ args.toSet, visited)
         case Debug(_, b) => leadsToSelf(sym, b, env, visited)
+        case ActionBlock(_, b, _) => leadsToSelf(sym, b, env, visited)
+        case LeftProject(_, l, r) =>
+          leadsToSelf(sym, l, env, visited) || (nullableExp(l, env) && leadsToSelf(sym, r, env, visited))
+        case RightProject(_, l, r) =>
+          leadsToSelf(sym, l, env, visited) || (nullableExp(l, env) && leadsToSelf(sym, r, env, visited))
         case _ => false
       }
       if(rules.exists(r => leadsToSelf(r.name, r.body, r.args.toSet, Set()))) return false
@@ -136,7 +168,9 @@ object Ast {
     name: Symbol,
     body: Expression,
     args: List[Symbol] = Nil,
-    argTypes: List[Option[Type]] = Nil
+    argTypes: List[Option[Type]] = Nil,
+    returnType: Option[String] = None,
+    annotations: List[Annotation] = Nil
   ) extends HasPosition
   /** This trait represents common super-type of parsing expression AST. */
   sealed trait Expression extends HasPosition
@@ -226,6 +260,15 @@ object Ast {
   case class Identifier(pos: Position, name: Symbol) extends Expression
 
   case class Function(pos: Position, args: List[Symbol], body: Expression) extends Expression
+
+  /** Action block: `body => { scalaCode }` — applies scalaCode as a map transformation */
+  case class ActionBlock(pos: Position, body: Expression, scalaCode: String) extends Expression
+
+  /** Left projection: `e1 <~ e2` — parse both, keep e1's result */
+  case class LeftProject(pos: Position, lhs: Expression, rhs: Expression) extends Expression
+
+  /** Right projection: `e1 ~> e2` — parse both, keep e2's result */
+  case class RightProject(pos: Position, lhs: Expression, rhs: Expression) extends Expression
 
   sealed abstract class Type(pos: Position)
   case class SimpleType(pos: Position) extends Type(pos)

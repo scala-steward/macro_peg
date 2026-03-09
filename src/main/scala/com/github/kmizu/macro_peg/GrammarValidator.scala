@@ -30,6 +30,9 @@ object GrammarValidator {
         else Some(GrammarError(pos, s"undefined rule or variable: ${name.name}", Some(s"define `${name.name}` before use")))
       case Function(_, args, body) => undefinedReference(body, env ++ args.toSet)
       case Debug(_, b) => undefinedReference(b, env)
+      case ActionBlock(_, b, _) => undefinedReference(b, env)
+      case LeftProject(_, l, r) => undefinedReference(l, env).orElse(undefinedReference(r, env))
+      case RightProject(_, l, r) => undefinedReference(l, env).orElse(undefinedReference(r, env))
       case _ => None
     }
 
@@ -58,6 +61,9 @@ object GrammarValidator {
       case Identifier(_, name) => if(env(name)) true else nullable.getOrElse(name, false)
       case Function(_, args, body) => exprNullable(body, env ++ args.toSet)
       case Debug(_, b) => exprNullable(b, env)
+      case ActionBlock(_, b, _) => exprNullable(b, env)
+      case LeftProject(_, l, r) => exprNullable(l, env) && exprNullable(r, env)
+      case RightProject(_, l, r) => exprNullable(l, env) && exprNullable(r, env)
     }
 
     var changed = true
@@ -92,10 +98,17 @@ object GrammarValidator {
         args.foldLeft(Option.empty[GrammarError])((acc, a) => acc.orElse(nullableRepetition(a, env)))
       case Function(_, args, body) => nullableRepetition(body, env ++ args.toSet)
       case Debug(_, b) => nullableRepetition(b, env)
+      case ActionBlock(_, b, _) => nullableRepetition(b, env)
+      case LeftProject(_, l, r) => nullableRepetition(l, env).orElse(nullableRepetition(r, env))
+      case RightProject(_, l, r) => nullableRepetition(l, env).orElse(nullableRepetition(r, env))
       case _ => None
     }
 
+    // Skip nullable-repetition check for higher-order rules (args.nonEmpty): parameters are
+    // macro-expanded at call sites and validated there; treating them as nullable here
+    // produces false positives for rules like SepBy0(elem, sep) = (elem (sep elem)*)?.
     val repetitionError = grammar.rules.iterator
+      .filter(_.args.isEmpty)
       .map(r => nullableRepetition(r.body, r.args.toSet))
       .collectFirst { case Some(err) => err }
     if(repetitionError.nonEmpty) return Left(repetitionError.get)
@@ -123,10 +136,18 @@ object GrammarValidator {
         else None
       case Function(_, args, body) => leadsToSelf(sym, body, env ++ args.toSet, visited)
       case Debug(_, b) => leadsToSelf(sym, b, env, visited)
+      case ActionBlock(_, b, _) => leadsToSelf(sym, b, env, visited)
+      case LeftProject(_, l, r) =>
+        leadsToSelf(sym, l, env, visited)
+          .orElse(if(nullableExpression(l, env)) leadsToSelf(sym, r, env, visited) else None)
+      case RightProject(_, l, r) =>
+        leadsToSelf(sym, l, env, visited)
+          .orElse(if(nullableExpression(l, env)) leadsToSelf(sym, r, env, visited) else None)
       case _ => None
     }
 
     val leftRecursionError = grammar.rules.iterator
+      .filter(_.args.isEmpty)
       .map(r => leadsToSelf(r.name, r.body, r.args.toSet, Set.empty).map { pos =>
         GrammarError(pos, s"left recursion detected for rule `${r.name.name}`", Some("remove direct or nullable-indirect left recursion"))
       })
