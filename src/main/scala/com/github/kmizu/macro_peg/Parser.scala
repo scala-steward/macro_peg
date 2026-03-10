@@ -38,7 +38,7 @@ object Parser {
 
     // ── Directives ──────────────────────────────────────────────────────────
     lazy val Directive: Parser[Ast.Directive] = rule(
-      PercentPackage | PercentImport | PercentObject | PercentStart | PercentHelper | PercentPreprocess
+      PercentPackage | PercentImport | PercentObject | PercentStart | PercentHelper | PercentPreprocess | PercentRaw
     )
     private def percentKeyword(kw: String): Parser[Unit] =
       (chr('%') ~ string(kw) ~ Spacing).map(_ => ())
@@ -60,6 +60,9 @@ object Parser {
     lazy val PercentPreprocess: Parser[Ast.PreprocessDirective] = rule(
       percentKeyword("preprocess") ~> ScalaBlock <~ chr(';').? <~ Spacing
     ) ^^ { code => Ast.PreprocessDirective(code) }
+    lazy val PercentRaw: Parser[Ast.RawRuleDirective] = rule(
+      (percentKeyword("raw") ~> Ident) ~ (ScalaBlock <~ chr(';').? <~ Spacing)
+    ) ^^ { case name ~ code => Ast.RawRuleDirective(name.name.name, code) }
 
     // ── Balanced-brace Scala code block parser ──────────────────────────────
     // Returns the inner content (excluding outer braces) as a String

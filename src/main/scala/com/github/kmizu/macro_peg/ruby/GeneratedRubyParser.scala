@@ -71,98 +71,61 @@ object GeneratedRubyParser {
   }
   def resetMemo(): Unit = _memoStore.get().clear()
 
-  
-  // Preprocessing pipeline: called automatically before parsing
-  private def stripXOptionPreamble(input: String): String = {
-    val lines = input.split("\n", -1).toList
-    val shebangIndex = lines.indexWhere(_.startsWith("#!"))
-    if (shebangIndex > 0 && lines.take(shebangIndex).exists(_.contains("-x")))
-      lines.drop(shebangIndex + 1).mkString("\n")
-    else input
-  }
 
-  private def stripEndMarker(input: String): String = {
-    if (!input.contains("__END__")) return input
-    val lines = input.split("\n", -1)
-    val endIdx = lines.indexWhere(_ == "__END__")
-    if (endIdx >= 0) lines.take(endIdx).mkString("\n") else input
-  }
 
-  private case class PendingHeredoc(
-    token: String,
-    terminator: String,
-    allowIndentedTerminator: Boolean,
-    lines: scala.collection.mutable.ArrayBuffer[String]
-  )
+  def parseHeredocLiteral(input: String, pos: Int): Option[(Any, Int)] = {
 
-  private def encodeDoubleQuoted(value: String): String = {
-    val builder = new StringBuilder("\"")
-    var index = 0
-    while (index < value.length) {
-      val c = value.charAt(index)
-      c match {
-        case '\\' => builder.append("\\\\")
-        case '"'  => builder.append("\\\"")
-        case '\n' => builder.append("\\n")
-        case '\r' => builder.append("\\r")
-        case '\t' => builder.append("\\t")
-        case '#' if index + 1 < value.length && value.charAt(index + 1) == '{' =>
-          builder.append("\\#")
-        case _ => builder.append(c)
-      }
-      index += 1
+    // Parse a Ruby heredoc literal: <<[-~]?(quote?DELIM quote?)
+    // Consumes the start line (<<DELIM + rest of line), heredoc body lines, and terminator line.
+    // Returns ("", posAfterTerminator) on success, None on failure.
+    var p = pos
+    if (p + 2 > input.length || input.charAt(p) != '<' || input.charAt(p + 1) != '<') return None
+    p += 2
+    // Optional flag: - or ~
+    val indented = if (p < input.length && (input.charAt(p) == '-' || input.charAt(p) == '~')) { p += 1; true } else false
+    // Optional quote character
+    val qc: Char = if (p < input.length && (input.charAt(p) == '"' || input.charAt(p) == '\'' || input.charAt(p) == '`')) {
+      val c = input.charAt(p); p += 1; c
+    } else '\u0000'
+    // Read delimiter
+    val delimStart = p
+    if (qc != '\u0000') {
+      // Quoted: read until matching close quote (or newline = error)
+      while (p < input.length && input.charAt(p) != qc && input.charAt(p) != '\n') p += 1
+      if (p >= input.length || input.charAt(p) != qc) return None
+    } else {
+      // Unquoted: identifier characters
+      while (p < input.length && (input.charAt(p).isLetterOrDigit || input.charAt(p) == '_')) p += 1
     }
-    builder.append("\"").toString
-  }
-
-  private def normalizeHeredoc(input: String): String = {
-    if (!input.contains("<<")) return input
-    val heredocPattern =
-      raw"""(?<![\w\)\]\}'\x22\x60\\])<<([~-]?)(?:'([^'\n]*)'|"([^"\n]*)"|`([^`\n]*)`|([A-Za-z_][A-Za-z0-9_]*))""".r
-    val outputLines  = scala.collection.mutable.ArrayBuffer.empty[String]
-    val replacements = scala.collection.mutable.ArrayBuffer.empty[(String, String)]
-    val pending      = scala.collection.mutable.Queue.empty[PendingHeredoc]
-    var nextId       = 0
-    val lines        = input.split("\n", -1)
-    lines.foreach { line =>
-      if (pending.nonEmpty) {
-        val current = pending.front
-        val isTerminator =
-          if (current.allowIndentedTerminator) line.trim == current.terminator
-          else line == current.terminator
-        if (isTerminator) {
-          pending.dequeue()
-          val content =
-            if (current.lines.isEmpty) ""
-            else current.lines.mkString("\n") + "\n"
-          replacements += current.token -> encodeDoubleQuoted(content)
-        } else {
-          current.lines += line
+    val delim = input.substring(delimStart, p)
+    if (delim.isEmpty) return None
+    if (qc != '\u0000') p += 1 // consume close quote
+    // Skip rest of start line (including the terminating \n)
+    while (p < input.length && input.charAt(p) != '\n' && input.charAt(p) != '\r') p += 1
+    if (p < input.length && input.charAt(p) == '\r') p += 1
+    if (p < input.length && input.charAt(p) == '\n') p += 1
+    // Scan subsequent lines for the terminator
+    while (p < input.length) {
+      val lineStart = p
+      var ts = p
+      if (indented) while (ts < input.length && (input.charAt(ts) == ' ' || input.charAt(ts) == '\t')) ts += 1
+      if (input.startsWith(delim, ts)) {
+        val after = ts + delim.length
+        if (after >= input.length || input.charAt(after) == '\n' || input.charAt(after) == '\r' || input.charAt(after) == ';') {
+          var end = after
+          if (end < input.length && input.charAt(end) == '\r') end += 1
+          if (end < input.length && input.charAt(end) == '\n') end += 1
+          return Some(("", end))
         }
-        if (pending.isEmpty) outputLines += line
-      } else {
-        var processedLine = line
-        var offset = 0
-        heredocPattern.findAllMatchIn(line).foreach { m =>
-          val indented   = m.group(1) == "-" || m.group(1) == "~"
-          val terminator = Option(m.group(2)).orElse(Option(m.group(3))).orElse(Option(m.group(4))).orElse(Option(m.group(5))).getOrElse("")
-          val token      = s"__MACROPEG_HEREDOC_${nextId}__"
-          nextId += 1
-          processedLine  = processedLine.substring(0, m.start - offset) + token + processedLine.substring(m.end - offset)
-          offset        += (m.end - m.start) - token.length
-          pending.enqueue(PendingHeredoc(token, terminator, indented, scala.collection.mutable.ArrayBuffer.empty))
-        }
-        outputLines += processedLine
       }
+      // Advance to next line
+      while (p < input.length && input.charAt(p) != '\n') p += 1
+      if (p < input.length) p += 1
+      if (p == lineStart) return None // guard: no progress (EOF edge case)
     }
-    val result = outputLines.mkString("\n")
-    replacements.foldLeft(result) { case (s, (tok, repl)) => s.replace(tok, repl) }
+    None
+
   }
-
-  // Entry point for the preprocessing pipeline
-  def _preprocess(input: String): String =
-    stripEndMarker(normalizeHeredoc(stripXOptionPreamble(input)))
-
 
   def parseHorizontalSpaceChar(input: String, pos: Int): Option[(Any, Int)] = _withMemo(0, pos) {
     (((if (input.startsWith(" ", pos)) Some((" ", pos + 1)) else None)).orElse((if (input.startsWith("\t", pos)) Some(("\t", pos + 1)) else None))).orElse((if (input.startsWith("\r", pos)) Some(("\r", pos + 1)) else None)).map { case (r, p) => (_applyAction({  _ => ()  }, r), p) }
@@ -913,7 +876,7 @@ object GeneratedRubyParser {
   def parseDotSep(input: String, pos: Int): Option[(Any, Int)] = (parseInlineSpacing(input, pos).flatMap { case (_r2298, _p2299) => (((if (input.startsWith("&.", _p2299)) Some(("&.", _p2299 + 2)) else None)).orElse((if (input.startsWith("::", _p2299)) Some(("::", _p2299 + 2)) else None))).orElse((if (input.startsWith(".", _p2299)) Some((".", _p2299 + 1)) else None)).map { case (_r2300, _p2301) => (new ~(_r2298, _r2300), _p2301) } }.flatMap { case (_r2294, _p2295) => parseInlineSpacing(input, _p2295).map { case (_r2296, _p2297) => (new ~(_r2294, _r2296), _p2297) } }).orElse(parseInlineSpacing(input, pos).flatMap { case (_r2314, _p2315) => (if (input.startsWith("\n", _p2315)) Some(("\n", _p2315 + 1)) else None).map { case (_r2316, _p2317) => (new ~(_r2314, _r2316), _p2317) } }.flatMap { case (_r2310, _p2311) => parseInlineSpacing(input, _p2311).map { case (_r2312, _p2313) => (new ~(_r2310, _r2312), _p2313) } }.flatMap { case (_r2306, _p2307) => (((if (input.startsWith("&.", _p2307)) Some(("&.", _p2307 + 2)) else None)).orElse((if (input.startsWith("::", _p2307)) Some(("::", _p2307 + 2)) else None))).orElse((if (input.startsWith(".", _p2307)) Some((".", _p2307 + 1)) else None)).map { case (_r2308, _p2309) => (new ~(_r2306, _r2308), _p2309) } }.flatMap { case (_r2302, _p2303) => parseInlineSpacing(input, _p2303).map { case (_r2304, _p2305) => (new ~(_r2302, _r2304), _p2305) } }).map { case (r, p) => (_applyAction({  _ => "."  }, r), p) }
 
   def parsePrimaryExpr(input: String, pos: Int): Option[(Any, Int)] = _withMemo(30, pos) {
-    (((((((((((((((((((((((((((((parseLambdaLiteral(input, pos)).orElse(parseSingletonClassExpr(input, pos))).orElse(parseBeginExpr(input, pos))).orElse(parseDefExprForm(input, pos))).orElse(parseReturnExpr(input, pos))).orElse(parseYieldExpr(input, pos))).orElse(parseIfExpr(input, pos))).orElse(parseUnlessExpr(input, pos))).orElse(parseCaseExpr(input, pos))).orElse(parseSelfExpr(input, pos))).orElse(parseBoolLiteral(input, pos))).orElse(parseNilLiteral(input, pos))).orElse(parseConstRef(input, pos))).orElse(parseVariable(input, pos))).orElse(parseFloatLiteral(input, pos))).orElse(parseIntegerLiteral(input, pos))).orElse(parseCharLiteral(input, pos))).orElse(parseStringLiteral(input, pos))).orElse(parseSingleQuotedStringLiteral(input, pos))).orElse(parseBacktickLiteral(input, pos))).orElse(parsePercentCommand(input, pos))).orElse(parsePercentQuotedStringLiteral(input, pos))).orElse(parsePercentSymbolLiteralExpr(input, pos))).orElse(parsePercentWordArray(input, pos))).orElse(parsePercentSymbolArray(input, pos))).orElse(parseRegexLiteral(input, pos))).orElse(parseSymbolLiteral(input, pos))).orElse(parseArrayLiteral(input, pos))).orElse(parseHashLiteral(input, pos))).orElse(parseParenExpr(input, pos))
+    ((((((((((((((((((((((((((((((parseLambdaLiteral(input, pos)).orElse(parseSingletonClassExpr(input, pos))).orElse(parseBeginExpr(input, pos))).orElse(parseDefExprForm(input, pos))).orElse(parseReturnExpr(input, pos))).orElse(parseYieldExpr(input, pos))).orElse(parseIfExpr(input, pos))).orElse(parseUnlessExpr(input, pos))).orElse(parseCaseExpr(input, pos))).orElse(parseSelfExpr(input, pos))).orElse(parseBoolLiteral(input, pos))).orElse(parseNilLiteral(input, pos))).orElse(parseConstRef(input, pos))).orElse(parseVariable(input, pos))).orElse(parseFloatLiteral(input, pos))).orElse(parseIntegerLiteral(input, pos))).orElse(parseCharLiteral(input, pos))).orElse(parseStringLiteral(input, pos))).orElse(parseSingleQuotedStringLiteral(input, pos))).orElse(parseBacktickLiteral(input, pos))).orElse(parsePercentCommand(input, pos))).orElse(parsePercentQuotedStringLiteral(input, pos))).orElse(parsePercentSymbolLiteralExpr(input, pos))).orElse(parsePercentWordArray(input, pos))).orElse(parsePercentSymbolArray(input, pos))).orElse(parseRegexLiteral(input, pos))).orElse(parseSymbolLiteral(input, pos))).orElse(parseArrayLiteral(input, pos))).orElse(parseHeredocLiteral(input, pos))).orElse(parseHashLiteral(input, pos))).orElse(parseParenExpr(input, pos))
   }
 
   def parseMethodName(input: String, pos: Int): Option[(Any, Int)] = (((parseSymbolOperatorName(input, pos)).orElse(parseConstNameNoSpace(input, pos))).orElse(parseMethodIdentifierRaw(input, pos))).orElse(((((((((((if (input.startsWith("private", pos)) Some(("private", pos + 7)) else None).flatMap { case (_r2322, _p2323) => (if (parseIdentCont(input, _p2323).isEmpty) Some(((), _p2323)) else None).map { case (_r2324, _p2325) => (new ~(_r2322, _r2324), _p2325) } }).orElse((if (input.startsWith("public", pos)) Some(("public", pos + 6)) else None).flatMap { case (_r2326, _p2327) => (if (parseIdentCont(input, _p2327).isEmpty) Some(((), _p2327)) else None).map { case (_r2328, _p2329) => (new ~(_r2326, _r2328), _p2329) } })).orElse((if (input.startsWith("protected", pos)) Some(("protected", pos + 9)) else None).flatMap { case (_r2330, _p2331) => (if (parseIdentCont(input, _p2331).isEmpty) Some(((), _p2331)) else None).map { case (_r2332, _p2333) => (new ~(_r2330, _r2332), _p2333) } })).orElse((if (input.startsWith("ruby2_keywords", pos)) Some(("ruby2_keywords", pos + 14)) else None).flatMap { case (_r2334, _p2335) => (if (parseIdentCont(input, _p2335).isEmpty) Some(((), _p2335)) else None).map { case (_r2336, _p2337) => (new ~(_r2334, _r2336), _p2337) } })).orElse((if (input.startsWith("class", pos)) Some(("class", pos + 5)) else None).flatMap { case (_r2338, _p2339) => (if (parseIdentCont(input, _p2339).isEmpty) Some(((), _p2339)) else None).map { case (_r2340, _p2341) => (new ~(_r2338, _r2340), _p2341) } })).orElse((if (input.startsWith("def", pos)) Some(("def", pos + 3)) else None).flatMap { case (_r2342, _p2343) => (if (parseIdentCont(input, _p2343).isEmpty) Some(((), _p2343)) else None).map { case (_r2344, _p2345) => (new ~(_r2342, _r2344), _p2345) } })).orElse((if (input.startsWith("begin", pos)) Some(("begin", pos + 5)) else None).flatMap { case (_r2346, _p2347) => (if (parseIdentCont(input, _p2347).isEmpty) Some(((), _p2347)) else None).map { case (_r2348, _p2349) => (new ~(_r2346, _r2348), _p2349) } })).orElse((if (input.startsWith("end", pos)) Some(("end", pos + 3)) else None).flatMap { case (_r2350, _p2351) => (if (parseIdentCont(input, _p2351).isEmpty) Some(((), _p2351)) else None).map { case (_r2352, _p2353) => (new ~(_r2350, _r2352), _p2353) } })).orElse((if (input.startsWith("for", pos)) Some(("for", pos + 3)) else None).flatMap { case (_r2354, _p2355) => (if (parseIdentCont(input, _p2355).isEmpty) Some(((), _p2355)) else None).map { case (_r2356, _p2357) => (new ~(_r2354, _r2356), _p2357) } })).orElse((if (input.startsWith("self", pos)) Some(("self", pos + 4)) else None).flatMap { case (_r2358, _p2359) => (if (parseIdentCont(input, _p2359).isEmpty) Some(((), _p2359)) else None).map { case (_r2360, _p2361) => (new ~(_r2358, _r2360), _p2361) } })).flatMap { case (_r2318, _p2319) => parseInlineSpacing(input, _p2319).map { case (_r2320, _p2321) => (new ~(_r2318, _r2320), _p2321) } }.map { case (r, p) => (_applyAction({  _ => ""  }, r), p) }
@@ -1883,42 +1846,49 @@ object GeneratedRubyParser {
   Some((_rs5951, _cp5952)) }.map { case (_r5949, _p5950) => (new ~(_r5947, _r5949), _p5950) } }.map { case (r, p) => (_applyAction({  _ => ExprStmt(NilLiteral())  }, r), p) }
   }
 
-  def parseTopLevelStatements(input: String, pos: Int): Option[(Any, Int)] = {
-  var _rs5968: List[Any] = Nil; var _cp5969: Int = pos; var _go5972 = true
-  while (_go5972) { parseStatementSep(input, _cp5969) match {
+  def parseEndDataSection(input: String, pos: Int): Option[(Any, Int)] = (if (input.startsWith("__END__", pos)) Some(("__END__", pos + 7)) else None).flatMap { case (_r5964, _p5965) => (if (parseIdentCont(input, _p5965).isEmpty) Some(((), _p5965)) else None).map { case (_r5966, _p5967) => (new ~(_r5964, _r5966), _p5967) } }.flatMap { case (_r5960, _p5961) => {
+  var _rs5968: List[Any] = Nil; var _cp5969: Int = _p5961; var _go5972 = true
+  while (_go5972) { (if (_cp5969 < input.length) Some((input.charAt(_cp5969).toString, _cp5969 + 1)) else None) match {
     case Some((_st5970, _np5971)) => _rs5968 = _rs5968 :+ _st5970; _cp5969 = _np5971
     case None => _go5972 = false } }
-  Some((_rs5968, _cp5969)) }.flatMap { case (_r5964, _p5965) => (parseStatement(input, _p5965).flatMap { case (_r5973, _p5974) => {
-  var _rs5977: List[Any] = Nil; var _cp5978: Int = _p5974; var _go5981 = true
-  while (_go5981) { {
-  parseStatementSep(input, _cp5978) match {
-    case None => None
-    case Some((_fs5986, _fp5987)) =>
-      var _rs5988: List[Any] = List(_fs5986); var _cp5989: Int = _fp5987; var _go5992 = true
-      while (_go5992) { parseStatementSep(input, _cp5989) match {
-        case Some((_st5990, _np5991)) => _rs5988 = _rs5988 :+ _st5990; _cp5989 = _np5991
-        case None => _go5992 = false } }
-      Some((_rs5988, _cp5989)) } }.flatMap { case (_r5982, _p5983) => parseStatement(input, _p5983).map { case (_r5984, _p5985) => (new ~(_r5982, _r5984), _p5985) } } match {
-    case Some((_st5979, _np5980)) => _rs5977 = _rs5977 :+ _st5979; _cp5978 = _np5980
-    case None => _go5981 = false } }
-  Some((_rs5977, _cp5978)) }.map { case (_r5975, _p5976) => (new ~(_r5973, _r5975), _p5976) } }.map { case (v, p) => (Some(v), p) }.orElse(Some((None, _p5965)))).map { case (_r5966, _p5967) => (new ~(_r5964, _r5966), _p5967) } }.flatMap { case (_r5960, _p5961) => {
-  var _rs5993: List[Any] = Nil; var _cp5994: Int = _p5961; var _go5997 = true
-  while (_go5997) { parseStatementSep(input, _cp5994) match {
-    case Some((_st5995, _np5996)) => _rs5993 = _rs5993 :+ _st5995; _cp5994 = _np5996
-    case None => _go5997 = false } }
-  Some((_rs5993, _cp5994)) }.map { case (_r5962, _p5963) => (new ~(_r5960, _r5962), _p5963) } }.map { case (r, p) => (_applyAction({  _ => List.empty[Statement]  }, r), p) }
+  Some((_rs5968, _cp5969)) }.map { case (_r5962, _p5963) => (new ~(_r5960, _r5962), _p5963) } }.map { case (r, p) => (_applyAction({  _ => ()  }, r), p) }
 
-  def parseProgram(input: String, pos: Int): Option[(Any, Int)] = parseSpacing(input, pos).flatMap { case (_, _p6001) => parseTopLevelStatements(input, _p6001) }.flatMap { case (_r5998, _p5999) => parseSpacing(input, _p5999).map { case (_, _p6000) => (_r5998, _p6000) } }.map { case (r, p) => (_applyAction({  _ => Program(List.empty)  }, r), p) }
+  def parseTopLevelStatements(input: String, pos: Int): Option[(Any, Int)] = {
+  var _rs5981: List[Any] = Nil; var _cp5982: Int = pos; var _go5985 = true
+  while (_go5985) { parseStatementSep(input, _cp5982) match {
+    case Some((_st5983, _np5984)) => _rs5981 = _rs5981 :+ _st5983; _cp5982 = _np5984
+    case None => _go5985 = false } }
+  Some((_rs5981, _cp5982)) }.flatMap { case (_r5977, _p5978) => ((if (parseEndDataSection(input, _p5978).isEmpty) Some(((), _p5978)) else None).flatMap { case (_r5990, _p5991) => parseStatement(input, _p5991).map { case (_r5992, _p5993) => (new ~(_r5990, _r5992), _p5993) } }.flatMap { case (_r5986, _p5987) => {
+  var _rs5994: List[Any] = Nil; var _cp5995: Int = _p5987; var _go5998 = true
+  while (_go5998) { {
+  parseStatementSep(input, _cp5995) match {
+    case None => None
+    case Some((_fs6007, _fp6008)) =>
+      var _rs6009: List[Any] = List(_fs6007); var _cp6010: Int = _fp6008; var _go6013 = true
+      while (_go6013) { parseStatementSep(input, _cp6010) match {
+        case Some((_st6011, _np6012)) => _rs6009 = _rs6009 :+ _st6011; _cp6010 = _np6012
+        case None => _go6013 = false } }
+      Some((_rs6009, _cp6010)) } }.flatMap { case (_r6003, _p6004) => (if (parseEndDataSection(input, _p6004).isEmpty) Some(((), _p6004)) else None).map { case (_r6005, _p6006) => (new ~(_r6003, _r6005), _p6006) } }.flatMap { case (_r5999, _p6000) => parseStatement(input, _p6000).map { case (_r6001, _p6002) => (new ~(_r5999, _r6001), _p6002) } } match {
+    case Some((_st5996, _np5997)) => _rs5994 = _rs5994 :+ _st5996; _cp5995 = _np5997
+    case None => _go5998 = false } }
+  Some((_rs5994, _cp5995)) }.map { case (_r5988, _p5989) => (new ~(_r5986, _r5988), _p5989) } }.map { case (v, p) => (Some(v), p) }.orElse(Some((None, _p5978)))).map { case (_r5979, _p5980) => (new ~(_r5977, _r5979), _p5980) } }.flatMap { case (_r5973, _p5974) => {
+  var _rs6014: List[Any] = Nil; var _cp6015: Int = _p5974; var _go6018 = true
+  while (_go6018) { parseStatementSep(input, _cp6015) match {
+    case Some((_st6016, _np6017)) => _rs6014 = _rs6014 :+ _st6016; _cp6015 = _np6017
+    case None => _go6018 = false } }
+  Some((_rs6014, _cp6015)) }.map { case (_r5975, _p5976) => (new ~(_r5973, _r5975), _p5976) } }.map { case (r, p) => (_applyAction({  _ => List.empty[Statement]  }, r), p) }
+
+  def parseProgram(input: String, pos: Int): Option[(Any, Int)] = parseSpacing(input, pos).flatMap { case (_, _p6025) => parseTopLevelStatements(input, _p6025) }.flatMap { case (_r6022, _p6023) => parseSpacing(input, _p6023).map { case (_, _p6024) => (_r6022, _p6024) } }.flatMap { case (_r6019, _p6020) => (parseEndDataSection(input, _p6020).map { case (v, p) => (Some(v), p) }.orElse(Some((None, _p6020)))).map { case (_, _p6021) => (_r6019, _p6021) } }.map { case (r, p) => (_applyAction({  _ => Program(List.empty)  }, r), p) }
 
   def parse(input: String): Option[(Any, Int)] = {
     resetMemo()
-    val _in = _preprocess(input)
+    val _in = input
     parseProgram(_in, 0)
   }
 
   def parseAll(input: String): Either[String, Any] = {
     resetMemo()
-    val _in = _preprocess(input)
+    val _in = input
     parseProgram(_in, 0) match {
       case Some((result, pos)) if pos == _in.length => Right(result)
       case Some((_, pos)) => Left(s"Unconsumed input at position $pos")

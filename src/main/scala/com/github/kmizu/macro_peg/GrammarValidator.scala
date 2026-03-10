@@ -7,7 +7,8 @@ case class GrammarError(pos: Position, message: String, hint: Option[String] = N
 object GrammarValidator {
   def validate(grammar: Grammar): Either[GrammarError, Unit] = {
     val ruleMapping = grammar.rules.map(r => r.name -> r).toMap
-    val ruleNames = ruleMapping.keySet
+    val rawRuleNames = grammar.directives.collect { case RawRuleDirective(n, _) => Symbol(n) }.toSet
+    val ruleNames = ruleMapping.keySet ++ rawRuleNames
 
     def undefinedReference(exp: Expression, env: Set[Symbol]): Option[GrammarError] = exp match {
       case Sequence(_, l, r) =>

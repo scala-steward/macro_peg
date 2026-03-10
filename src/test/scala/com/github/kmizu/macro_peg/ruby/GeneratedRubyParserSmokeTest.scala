@@ -56,4 +56,12 @@ class GeneratedRubyParserSmokeTest extends AnyFunSuite {
   test("parses empty program") {
     assert(accepts(""))
   }
+
+  test("parses heredoc literal") {
+    assert(accepts("x = <<~HEREDOC\n  hello world\nHEREDOC"))
+  }
+
+  test("parses heredoc with __END__") {
+    assert(accepts("x = 1\n__END__\nthis is data section"))
+  }
 }

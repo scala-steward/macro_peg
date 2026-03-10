@@ -71,7 +71,8 @@ object ParserGenerator {
     startRule: Symbol
   ): Either[GenerationError, String] = {
     val effectiveStart = grammar.directives.collectFirst { case StartDirective(r) => r }.getOrElse(startRule)
-    if(!grammar.rules.exists(_.name == effectiveStart)) {
+    val rawRuleNamesSet = grammar.directives.collect { case RawRuleDirective(n, _) => n }.toSet
+    if(!grammar.rules.exists(_.name == effectiveStart) && !rawRuleNamesSet(effectiveStart.name)) {
       return Left(GenerationError(Ast.DUMMY_POSITION, s"start rule `${effectiveStart.name}` is not defined", Some("choose an existing rule as startRule")))
     }
 
@@ -273,12 +274,14 @@ object ParserGenerator {
       s"  def $method(input: String, pos: Int): Option[(Any, Int)] = $body"
     }
 
-    val directives = grammar.directives
-    val pkgName    = directives.collectFirst { case PackageDirective(n) => n }.orElse(packageName)
-    val objName    = directives.collectFirst { case ObjectDirective(n) => n }.getOrElse(objectName)
-    val imports    = directives.collect { case ImportDirective(p) => s"import $p" }
-    val helpers    = directives.collect { case HelperDirective(c) => c }
-    val preprocs   = directives.collect { case PreprocessDirective(c) => c }
+    val directives   = grammar.directives
+    val pkgName      = directives.collectFirst { case PackageDirective(n) => n }.orElse(packageName)
+    val objName      = directives.collectFirst { case ObjectDirective(n) => n }.getOrElse(objectName)
+    val imports      = directives.collect { case ImportDirective(p) => s"import $p" }
+    val helpers      = directives.collect { case HelperDirective(c) => c }
+    val preprocs     = directives.collect { case PreprocessDirective(c) => c }
+    val rawRules     = directives.collect { case RawRuleDirective(name, body) => (name, body) }
+    val rawRuleNames = rawRules.map(_._1).toSet
 
     val packageLine  = pkgName.map(p => s"package $p\n\n").getOrElse("")
     val importSection = if (imports.nonEmpty) imports.mkString("\n") + "\n\n" else ""
@@ -306,7 +309,11 @@ object ParserGenerator {
     val helperSection  = helpers.map(h => s"  $h").mkString("\n")
     val preprocSection = preprocs.map(p => s"  $p").mkString("\n")
     val hasPreproc     = preprocs.nonEmpty
-    val ruleDefs       = grammar.rules.filter(_.args.isEmpty).map(genRule).filter(_.nonEmpty).mkString("\n\n")
+    val rawRuleDefs    = rawRules.map { case (name, body) =>
+      val method = parseMethodName(Symbol(name))
+      s"  def $method(input: String, pos: Int): Option[(Any, Int)] = {\n$body\n  }"
+    }.mkString("\n\n")
+    val ruleDefs       = grammar.rules.filter(r => r.args.isEmpty && !rawRuleNames(r.name.name)).map(genRule).filter(_.nonEmpty).mkString("\n\n")
     val startMethod    = parseMethodName(startRule)
 
     // parse entry point: if %preprocess is defined, call _preprocess first
@@ -322,6 +329,8 @@ object ParserGenerator {
          |$memoInfra
          |$helperSection
          |$preprocSection
+         |
+         |$rawRuleDefs
          |
          |$ruleDefs
          |

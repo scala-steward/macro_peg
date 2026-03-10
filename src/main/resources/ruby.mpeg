@@ -10,98 +10,58 @@
 %object GeneratedRubyParser;
 %start program;
 
-%preprocess {
-  // Preprocessing pipeline: called automatically before parsing
-  private def stripXOptionPreamble(input: String): String = {
-    val lines = input.split("\n", -1).toList
-    val shebangIndex = lines.indexWhere(_.startsWith("#!"))
-    if (shebangIndex > 0 && lines.take(shebangIndex).exists(_.contains("-x")))
-      lines.drop(shebangIndex + 1).mkString("\n")
-    else input
-  }
-
-  private def stripEndMarker(input: String): String = {
-    if (!input.contains("__END__")) return input
-    val lines = input.split("\n", -1)
-    val endIdx = lines.indexWhere(_ == "__END__")
-    if (endIdx >= 0) lines.take(endIdx).mkString("\n") else input
-  }
-
-  private case class PendingHeredoc(
-    token: String,
-    terminator: String,
-    allowIndentedTerminator: Boolean,
-    lines: scala.collection.mutable.ArrayBuffer[String]
-  )
-
-  private def encodeDoubleQuoted(value: String): String = {
-    val builder = new StringBuilder("\"")
-    var index = 0
-    while (index < value.length) {
-      val c = value.charAt(index)
-      c match {
-        case '\\' => builder.append("\\\\")
-        case '"'  => builder.append("\\\"")
-        case '\n' => builder.append("\\n")
-        case '\r' => builder.append("\\r")
-        case '\t' => builder.append("\\t")
-        case '#' if index + 1 < value.length && value.charAt(index + 1) == '{' =>
-          builder.append("\\#")
-        case _ => builder.append(c)
-      }
-      index += 1
+%raw heredocLiteral {
+    // Parse a Ruby heredoc literal: <<[-~]?(quote?DELIM quote?)
+    // Consumes the start line (<<DELIM + rest of line), heredoc body lines, and terminator line.
+    // Returns ("", posAfterTerminator) on success, None on failure.
+    var p = pos
+    if (p + 2 > input.length || input.charAt(p) != '<' || input.charAt(p + 1) != '<') return None
+    p += 2
+    // Optional flag: - or ~
+    val indented = if (p < input.length && (input.charAt(p) == '-' || input.charAt(p) == '~')) { p += 1; true } else false
+    // Optional quote character
+    val qc: Char = if (p < input.length && (input.charAt(p) == '"' || input.charAt(p) == '\'' || input.charAt(p) == '`')) {
+      val c = input.charAt(p); p += 1; c
+    } else '\u0000'
+    // Read delimiter
+    val delimStart = p
+    if (qc != '\u0000') {
+      // Quoted: read until matching close quote (or newline = error)
+      while (p < input.length && input.charAt(p) != qc && input.charAt(p) != '\n') p += 1
+      if (p >= input.length || input.charAt(p) != qc) return None
+    } else {
+      // Unquoted: identifier characters
+      while (p < input.length && (input.charAt(p).isLetterOrDigit || input.charAt(p) == '_')) p += 1
     }
-    builder.append("\"").toString
-  }
-
-  private def normalizeHeredoc(input: String): String = {
-    if (!input.contains("<<")) return input
-    val heredocPattern =
-      raw"""(?<![\w\)\]\}'\x22\x60\\])<<([~-]?)(?:'([^'\n]*)'|"([^"\n]*)"|`([^`\n]*)`|([A-Za-z_][A-Za-z0-9_]*))""".r
-    val outputLines  = scala.collection.mutable.ArrayBuffer.empty[String]
-    val replacements = scala.collection.mutable.ArrayBuffer.empty[(String, String)]
-    val pending      = scala.collection.mutable.Queue.empty[PendingHeredoc]
-    var nextId       = 0
-    val lines        = input.split("\n", -1)
-    lines.foreach { line =>
-      if (pending.nonEmpty) {
-        val current = pending.front
-        val isTerminator =
-          if (current.allowIndentedTerminator) line.trim == current.terminator
-          else line == current.terminator
-        if (isTerminator) {
-          pending.dequeue()
-          val content =
-            if (current.lines.isEmpty) ""
-            else current.lines.mkString("\n") + "\n"
-          replacements += current.token -> encodeDoubleQuoted(content)
-        } else {
-          current.lines += line
+    val delim = input.substring(delimStart, p)
+    if (delim.isEmpty) return None
+    if (qc != '\u0000') p += 1 // consume close quote
+    // Skip rest of start line (including the terminating \n)
+    while (p < input.length && input.charAt(p) != '\n' && input.charAt(p) != '\r') p += 1
+    if (p < input.length && input.charAt(p) == '\r') p += 1
+    if (p < input.length && input.charAt(p) == '\n') p += 1
+    // Scan subsequent lines for the terminator
+    while (p < input.length) {
+      val lineStart = p
+      var ts = p
+      if (indented) while (ts < input.length && (input.charAt(ts) == ' ' || input.charAt(ts) == '\t')) ts += 1
+      if (input.startsWith(delim, ts)) {
+        val after = ts + delim.length
+        if (after >= input.length || input.charAt(after) == '\n' || input.charAt(after) == '\r' || input.charAt(after) == ';') {
+          var end = after
+          if (end < input.length && input.charAt(end) == '\r') end += 1
+          if (end < input.length && input.charAt(end) == '\n') end += 1
+          return Some(("", end))
         }
-        if (pending.isEmpty) outputLines += line
-      } else {
-        var processedLine = line
-        var offset = 0
-        heredocPattern.findAllMatchIn(line).foreach { m =>
-          val indented   = m.group(1) == "-" || m.group(1) == "~"
-          val terminator = Option(m.group(2)).orElse(Option(m.group(3))).orElse(Option(m.group(4))).orElse(Option(m.group(5))).getOrElse("")
-          val token      = s"__MACROPEG_HEREDOC_${nextId}__"
-          nextId += 1
-          processedLine  = processedLine.substring(0, m.start - offset) + token + processedLine.substring(m.end - offset)
-          offset        += (m.end - m.start) - token.length
-          pending.enqueue(PendingHeredoc(token, terminator, indented, scala.collection.mutable.ArrayBuffer.empty))
-        }
-        outputLines += processedLine
       }
+      // Advance to next line
+      while (p < input.length && input.charAt(p) != '\n') p += 1
+      if (p < input.length) p += 1
+      if (p == lineStart) return None // guard: no progress (EOF edge case)
     }
-    val result = outputLines.mkString("\n")
-    replacements.foldLeft(result) { case (s, (tok, repl)) => s.replace(tok, repl) }
-  }
-
-  // Entry point for the preprocessing pipeline
-  def _preprocess(input: String): String =
-    stripEndMarker(normalizeHeredoc(stripXOptionPreamble(input)))
+    None
 };
+
 
 // ── Higher-order combinators ─────────────────────────────────────────────
 
@@ -792,6 +752,7 @@ primaryExpr =
     regexLiteral /
     symbolLiteral /
     arrayLiteral /
+    heredocLiteral /
     hashLiteral /
     parenExpr
   ) ;
@@ -1290,10 +1251,14 @@ statement =
 
 // ── Top-level program ─────────────────────────────────────────────────────
 
+// Matches __END__ followed by anything until EOF (data section)
+endDataSection =
+  "__END__" !identCont .* => { _ => () } ;
+
 topLevelStatements =
-  statementSep* (statement (statementSep+ statement)*)? statementSep*
+  statementSep* (!(endDataSection) statement (statementSep+ !(endDataSection) statement)*)? statementSep*
   => { _ => List.empty[Statement] } ;
 
 program =
-  spacing ~> topLevelStatements <~ spacing
+  spacing ~> topLevelStatements <~ spacing <~ endDataSection?
   => { _ => Program(List.empty) } ;

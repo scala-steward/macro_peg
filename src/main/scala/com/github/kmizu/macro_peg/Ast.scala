@@ -32,7 +32,7 @@ object Ast {
   case class LabelAnnotation(pos: Position, name: String) extends Annotation
   case class GuardAnnotation(pos: Position, name: String) extends Annotation
 
-  /** Top-level directive: %package, %import, %object, %start, %helper {...}, %preprocess {...} */
+  /** Top-level directive: %package, %import, %object, %start, %helper {...}, %preprocess {...}, %raw name {...} */
   sealed trait Directive
   case class PackageDirective(name: String) extends Directive
   case class ImportDirective(path: String) extends Directive
@@ -40,6 +40,8 @@ object Ast {
   case class StartDirective(rule: Symbol) extends Directive
   case class HelperDirective(scalaCode: String) extends Directive
   case class PreprocessDirective(scalaCode: String) extends Directive
+  /** %raw ruleName { scalaBody } — defines parseRuleName directly as Scala; skips grammar-gen for this rule */
+  case class RawRuleDirective(ruleName: String, scalaBody: String) extends Directive
 
   case class Grammar(pos: Position, rules: List[Rule], directives: List[Directive] = Nil) extends HasPosition {
     def +(newRule: Rule): Grammar = Grammar(pos, rules = newRule::rules, directives)
