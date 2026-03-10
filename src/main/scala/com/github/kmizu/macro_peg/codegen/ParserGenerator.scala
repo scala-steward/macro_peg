@@ -238,7 +238,7 @@ object ParserGenerator {
         s"(if (${genExpr(b, pos)}.isEmpty) Some(((), $pos)) else None)"
 
       case ActionBlock(_, body, code) =>
-        s"${genExpr(body, pos)}.map { case (r, p) => (({ $code })(r), p) }"
+        s"${genExpr(body, pos)}.map { case (r, p) => (_applyAction({ $code }, r), p) }"
 
       case Debug(_, b) => genExpr(b, pos)
 
@@ -317,6 +317,7 @@ object ParserGenerator {
          |  case class ~[+A, +B](_1: A, _2: B) {
          |    override def toString: String = s"($$_1 ~ $$_2)"
          |  }
+         |  private def _applyAction(f: Any => Any, v: Any): Any = f(v)
          |
          |$memoInfra
          |$helperSection
@@ -324,15 +325,21 @@ object ParserGenerator {
          |
          |$ruleDefs
          |
-         |  def parse(input: String): Option[(Any, Int)] =
-         |    $startMethod($parseEntryInput, 0)
+         |  def parse(input: String): Option[(Any, Int)] = {
+         |    resetMemo()
+         |    val _in = $parseEntryInput
+         |    $startMethod(_in, 0)
+         |  }
          |
-         |  def parseAll(input: String): Either[String, Any] =
-         |    $startMethod($parseEntryInput, 0) match {
-         |      case Some((result, pos)) if pos == input.length => Right(result)
+         |  def parseAll(input: String): Either[String, Any] = {
+         |    resetMemo()
+         |    val _in = $parseEntryInput
+         |    $startMethod(_in, 0) match {
+         |      case Some((result, pos)) if pos == _in.length => Right(result)
          |      case Some((_, pos)) => Left(s"Unconsumed input at position $$pos")
          |      case None => Left("Parse failed")
          |    }
+         |  }
          |}
          |""".stripMargin
     )

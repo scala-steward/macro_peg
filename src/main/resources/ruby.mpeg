@@ -103,20 +103,23 @@
     stripEndMarker(normalizeHeredoc(stripXOptionPreamble(input)))
 };
 
-// ── Higher-order combinators (macro-expanded inline) ──────────────────────
+// ── Higher-order combinators ─────────────────────────────────────────────
 
-// SepBy0: zero or more `elem` separated by `sep`; returns List
 SepBy0(elem, sep) =
   (elem (sep elem)*)?
   => { case Some(h ~ t) => h :: t.asInstanceOf[List[Any]].map({ case _ ~ v => v })
        case None => List.empty[Any] } ;
 
-// SepBy1: one or more `elem` separated by `sep`; returns List
 SepBy1(elem, sep) =
   elem (sep elem)*
   => { case h ~ t => h :: t.asInstanceOf[List[Any]].map({ case _ ~ v => v }) } ;
 
-// ── Lexical primitives ────────────────────────────────────────────────────
+// Block body: parse statements until stop is ahead (stop not consumed)
+blockStatementsUntil(stop) =
+  (!(stop) statement statementSep*)*
+  => { _ => List.empty[Statement] } ;
+
+// ── Lexical primitives ───────────────────────────────────────────────────
 
 @memo
 horizontalSpaceChar =
@@ -146,19 +149,28 @@ spacing =
 spacing1 =
   (horizontalSpaceChar / comment / blockComment)+ => { _ => () } ;
 
+lineBreak =
+  inlineSpacing "\n" inlineSpacing => { _ => () } ;
+
+@memo
+statementSep =
+  inlineSpacing (";" / "\n") spacing
+  => { _ => () } ;
+
 @memo
 identStart =
-  [a-zA-Z_] => { c => c } ;
+  [a-zA-Z_] => { c => c.toString } ;
 
 @memo
 identCont =
-  [a-zA-Z0-9_] => { c => c } ;
+  [a-zA-Z0-9_] => { c => c.toString } ;
 
 @memo
 identifierRaw =
   identStart identCont*
   => { case s ~ cs => s.toString + cs.asInstanceOf[List[Any]].mkString } ;
 
+@memo
 reservedWord =
   ( "begin" / "end" / "do" / "if" / "unless" / "while" / "until"
   / "for" / "in" / "return" / "yield" / "and" / "or" / "not"
@@ -171,110 +183,1117 @@ identifierNoSpace =
   !(reservedWord) identifierRaw
   => { case _ ~ name => name.asInstanceOf[String] } ;
 
+@memo
 identifier =
   identifierNoSpace inlineSpacing
-  => { case name ~ _ => name } ;
-
-// ── Top-level structure ───────────────────────────────────────────────────
-
-program =
-  spacing ~> topLevelStatements <~ spacing
-  => { stmts => Program(stmts.asInstanceOf[List[Statement]]) } ;
-
-statementSep =
-  inlineSpacing (newlineChar / ";") spacing => { _ => () } ;
-
-topLevelStatements =
-  statement (statementSep statement)*
-  => { case first ~ rest =>
-       first.asInstanceOf[Statement] :: rest.asInstanceOf[List[Any]].map({ case _ ~ s => s.asInstanceOf[Statement] }) } ;
-
-// ── Statements (skeleton — exprStatement only for now) ────────────────────
+  => { case name ~ _ => name.asInstanceOf[String] } ;
 
 @memo
-statement =
-  exprStatement => { s => s } ;
-
-exprStatement =
-  expr inlineSpacing
-  => { case e ~ _ => ExprStatement(e.asInstanceOf[Expr]) } ;
-
-// ── Expressions ───────────────────────────────────────────────────────────
+constNameNoSpace =
+  [A-Z] identCont*
+  => { case h ~ t => h.toString + t.asInstanceOf[List[Any]].mkString } ;
 
 @memo
-expr =
-  ( floatLiteral
-  / integerLiteral
-  / stringLiteral
-  / singleQuotedStringLiteral
-  / nilLiteral
-  / trueLiteral
-  / falseLiteral
-  / identifierExpr
-  ) => { e => e } ;
+constName =
+  constNameNoSpace inlineSpacing
+  => { case name ~ _ => name.asInstanceOf[String] } ;
 
-// ── Atomic literals ───────────────────────────────────────────────────────
+instanceVarNameRaw =
+  "@" identifierRaw
+  => { case _ ~ name => "@" + name.asInstanceOf[String] } ;
+
+classVarNameRaw =
+  "@@" identifierRaw
+  => { case _ ~ name => "@@" + name.asInstanceOf[String] } ;
+
+@memo
+instanceVarName =
+  instanceVarNameRaw inlineSpacing
+  => { case name ~ _ => name.asInstanceOf[String] } ;
+
+@memo
+classVarName =
+  classVarNameRaw inlineSpacing
+  => { case name ~ _ => name.asInstanceOf[String] } ;
+
+globalVarSpecial =
+  ( "$!" / "$?" / "$@" / "$&" / "$`" / "$'" / "$+" / "$~"
+  / "$/" / "$\\" / "$," / "$." / "$;" / "$<" / "$>" / "$_"
+  / "$:" / "$=" / "$*" / "$$"
+  ) => { s => s } ;
+
+globalVarDash =
+  "$-" [a-zA-Z0-9_]
+  => { case _ ~ c => "$-" + c.toString } ;
+
+globalVarNumeric =
+  "$" [0-9]+
+  => { case _ ~ ds => "$" + ds.asInstanceOf[List[Any]].mkString } ;
+
+globalVarNamed =
+  "$" identifierRaw
+  => { case _ ~ name => "$" + name.asInstanceOf[String] } ;
+
+@memo
+globalVarName =
+  (globalVarSpecial / globalVarDash / globalVarNumeric / globalVarNamed) inlineSpacing
+  => { case n ~ _ => n.asInstanceOf[String] } ;
+
+constPathSegment =
+  "::" constNameNoSpace => { case _ ~ n => n.asInstanceOf[String] } ;
+
+constPathNoSpace =
+  constNameNoSpace constPathSegment*
+  => { case h ~ t => h.asInstanceOf[String] :: t.asInstanceOf[List[Any]].map(_.asInstanceOf[String]) } ;
+
+constPathWithRoot =
+  "::" constNameNoSpace ("::" constNameNoSpace)*
+  => { _ => List.empty[String] } ;
+
+@memo
+constPath =
+  (constPathNoSpace / constPathWithRoot) inlineSpacing
+  => { case p ~ _ => p } ;
+
+symbolOperatorName =
+  ( "**" / "===" / "<=>" / "=~" / "!~" / "!=" / "=="
+  / "<<" / ">>" / "[]=" / "[]" / "<=" / ">=" / "<" / ">"
+  / "+@" / "-@" / "+" / "-" / "*" / "/" / "%" / "&" / "|" / "^" / "~" / "!" / "`"
+  ) => { s => s } ;
+
+methodSuffixChar =
+  ("?" / ("!" !("=" / "~")) / ("=" !("=" / ">" / "~")))
+  => { s => s } ;
+
+methodIdentifierRaw =
+  ( (identifierRaw methodSuffixChar) /
+    (!(reservedWord) identifierRaw)
+  ) => { v => v } ;
+
+// ── Token helpers ────────────────────────────────────────────────────────
+
+assignEq =
+  "=" !("=" / ">" / "~") inlineSpacing => { _ => "=" } ;
+
+labelColon =
+  ":" !":" inlineSpacing => { _ => ":" } ;
+
+// ── Numeric literals ─────────────────────────────────────────────────────
+
+decimalDigitsRaw =
+  [0-9] [0-9_]*
+  => { _ => "" } ;
+
+binaryDigitsRaw =
+  [01] [01_]*
+  => { _ => "" } ;
+
+octalDigitsRaw =
+  [0-7] [0-7_]*
+  => { _ => "" } ;
+
+hexDigitsRaw =
+  [0-9a-fA-F] [0-9a-fA-F_]*
+  => { _ => "" } ;
+
+integerLiteralCore =
+  ( ("0" [bB] binaryDigitsRaw) /
+    ("0" [oO] octalDigitsRaw) /
+    ("0" [dD] decimalDigitsRaw) /
+    ("0" [xX] hexDigitsRaw) /
+    decimalDigitsRaw
+  ) => { _ => "" } ;
+
+numericSuffix =
+  ("ri" / "ir" / "r" / "i") => { s => s } ;
+
+floatExponent =
+  [eE] ("+" / "-")? [0-9]+ => { _ => "" } ;
+
+floatLiteralCore =
+  ( (decimalDigitsRaw "." decimalDigitsRaw floatExponent?) /
+    (decimalDigitsRaw floatExponent)
+  ) => { _ => "" } ;
+
+@memo
+floatLiteral =
+  floatLiteralCore numericSuffix? !identCont inlineSpacing
+  => { _ => FloatLiteral(0.0) } ;
+
+@memo
+integerLiteral =
+  integerLiteralCore !("." [0-9]) numericSuffix? !identCont inlineSpacing
+  => { _ => IntLiteral(BigInt(0)) } ;
+
+// ── Character literal ────────────────────────────────────────────────────
+
+charLiteral =
+  "?" !(" " / "\t" / "\n") ("\\" . / .) inlineSpacing
+  => { _ => StringLiteral("") } ;
+
+// ── String escapes and interpolation ────────────────────────────────────
+
+escapedChar =
+  "\\" . => { case _ ~ c => c.toString } ;
+
+interpolationChunkInner =
+  ( ("\"" (!("\"") .)* "\"") /
+    ("'" (!"'" .)* "'") /
+    ("{" interpolationChunkInner* "}") /
+    (!"}" .)
+  ) => { _ => "" } ;
+
+interpolationSegment =
+  "#{" interpolationChunkInner* "}"
+  => { _ => "" } ;
+
+// ── Double-quoted string ─────────────────────────────────────────────────
+
+dqStringChar =
+  !("\"" / "\\" / "#{") .
+  => { c => c.toString } ;
+
+@memo
+stringLiteral =
+  "\"" (escapedChar / interpolationSegment / dqStringChar)* "\"" inlineSpacing
+  => { _ => StringLiteral("") } ;
+
+// ── Single-quoted string ─────────────────────────────────────────────────
+
+sqStringChar =
+  !("'" / "\\") . => { c => c.toString } ;
+
+escapedSqChar =
+  "\\" ("'" / "\\") => { case _ ~ c => c.toString } ;
+
+@memo
+singleQuotedStringLiteral =
+  "'" (escapedSqChar / sqStringChar)* "'" inlineSpacing
+  => { _ => StringLiteral("") } ;
+
+// ── Backtick literal ─────────────────────────────────────────────────────
+
+backtickChar =
+  !("`" / "\\" / "#{") . => { c => c.toString } ;
+
+backtickLiteral =
+  "`" (escapedChar / interpolationSegment / backtickChar)* "`" inlineSpacing
+  => { _ => StringLiteral("") } ;
+
+// ── Percent literal bodies (parameterized by delimiter) ──────────────────
+
+// Concrete recursive percent-body rules (no infinite macro expansion)
+percentBodyBraces =
+  "{" (("\\" .) / percentBodyBraces / !"}" .)* "}"
+  => { _ => "" } ;
+
+percentBodyParens =
+  "(" (("\\" .) / percentBodyParens / !")" .)* ")"
+  => { _ => "" } ;
+
+percentBodyBrackets =
+  "[" (("\\" .) / percentBodyBrackets / !"]" .)* "]"
+  => { _ => "" } ;
+
+percentBodyAngles =
+  "<" (("\\" .) / percentBodyAngles / !">" .)* ">"
+  => { _ => "" } ;
+
+percentBodySimplePipe =
+  "|" (("\\" .) / !"|" .)* "|" => { _ => "" } ;
+
+percentBodySimplePercent =
+  "%" (("\\" .) / !"%" .)* "%" => { _ => "" } ;
+
+percentBodySimpleDoubleQuote =
+  "\"" (("\\" .) / !"\"" .)* "\"" => { _ => "" } ;
+
+percentBodySimpleSingleQuote =
+  "'" (("\\" .) / !"'" .)* "'" => { _ => "" } ;
+
+percentBodySimpleSlash =
+  "/" (("\\" .) / !"/" .)* "/" => { _ => "" } ;
+
+percentBodySimpleColon =
+  ":" (("\\" .) / !":" .)* ":" => { _ => "" } ;
+
+percentBodySimpleExcl =
+  "!" (("\\" .) / !"!" .)* "!" => { _ => "" } ;
+
+percentBodySimpleComma =
+  "," (("\\" .) / !"," .)* "," => { _ => "" } ;
+
+percentBodySimpleSemicolon =
+  ";" (("\\" .) / !";" .)* ";" => { _ => "" } ;
+
+percentBodySimpleDash =
+  "-" (("\\" .) / !"-" .)* "-" => { _ => "" } ;
+
+percentBodySimpleUnderscore =
+  "_" (("\\" .) / !"_" .)* "_" => { _ => "" } ;
+
+percentBodySimpleEquals =
+  "=" (("\\" .) / !"=" .)* "=" => { _ => "" } ;
+
+percentBodySimplePlus =
+  "+" (("\\" .) / !"+" .)* "+" => { _ => "" } ;
+
+percentBody =
+  ( percentBodyBraces /
+    percentBodyParens /
+    percentBodyBrackets /
+    percentBodyAngles /
+    percentBodySimplePipe /
+    percentBodySimplePercent /
+    percentBodySimpleDoubleQuote /
+    percentBodySimpleSingleQuote /
+    percentBodySimpleSlash /
+    percentBodySimpleColon /
+    percentBodySimpleExcl /
+    percentBodySimpleComma /
+    percentBodySimpleSemicolon /
+    percentBodySimpleDash /
+    percentBodySimpleUnderscore /
+    percentBodySimpleEquals /
+    percentBodySimplePlus
+  ) => { _ => "" } ;
+
+percentQuotedStringLiteral =
+  "%" !("r" / "w" / "W" / "i" / "I" / "s" / "x") ("q" / "Q")? percentBody inlineSpacing
+  => { _ => StringLiteral("") } ;
+
+percentWordArray =
+  "%" ("w" / "W") percentBody inlineSpacing
+  => { _ => ArrayLiteral(List.empty) } ;
+
+percentSymbolArray =
+  "%" ("i" / "I") percentBody inlineSpacing
+  => { _ => ArrayLiteral(List.empty) } ;
+
+percentSymbolLiteralExpr =
+  "%s" percentBody inlineSpacing
+  => { _ => SymbolLiteral("", UnknownSpan) } ;
+
+percentRegex =
+  "%r" percentBody [a-zA-Z]* inlineSpacing
+  => { _ => StringLiteral("") } ;
+
+percentCommand =
+  "%x" percentBody inlineSpacing
+  => { _ => StringLiteral("") } ;
+
+// ── Regex literal ────────────────────────────────────────────────────────
+
+escapedRegexChar =
+  "\\" . => { _ => "" } ;
+
+plainRegexChar =
+  !("/" / "\\" / "#{") . => { c => c.toString } ;
+
+regexBodyChars =
+  (escapedRegexChar / interpolationSegment / plainRegexChar)*
+  => { _ => "" } ;
+
+regexLiteral =
+  percentRegex /
+  ("/" !(" " / "\t") regexBodyChars "/" [a-zA-Z]* inlineSpacing
+   => { _ => StringLiteral("") }) ;
+
+// ── Symbol literals ──────────────────────────────────────────────────────
+
+symbolNamePart =
+  ( symbolOperatorName /
+    classVarNameRaw /
+    instanceVarNameRaw /
+    globalVarNamed /
+    methodIdentifierRaw /
+    constNameNoSpace /
+    (reservedWord => { r => r })
+  ) => { v => v } ;
+
+@memo
+symbolLiteral =
+  ":" !":" (
+    ( "\"" (escapedChar / interpolationSegment / dqStringChar)* "\"" ) /
+    ( "'" (escapedSqChar / sqStringChar)* "'" ) /
+    symbolNamePart
+  ) inlineSpacing
+  => { _ => SymbolLiteral("", UnknownSpan) } ;
+
+labelNameNoSpace =
+  (!(reservedWord) identifierRaw / reservedWord)
+  => { v => v } ;
+
+labelSymbol =
+  labelNameNoSpace ":" !":" inlineSpacing
+  => { _ => SymbolLiteral("", UnknownSpan) } ;
+
+quotedLabelSymbol =
+  (stringLiteral / symbolLiteral) labelColon spacing
+  => { _ => SymbolLiteral("", UnknownSpan) } ;
+
+// ── Variable/const expressions ───────────────────────────────────────────
+
+@memo
+selfExpr =
+  "self" !identCont inlineSpacing => { _ => SelfExpr() } ;
+
+boolLiteral =
+  ( ("true" !identCont inlineSpacing) /
+    ("false" !identCont inlineSpacing)
+  ) => { _ => BoolLiteral(true) } ;
 
 nilLiteral =
   "nil" !identCont inlineSpacing => { _ => NilLiteral() } ;
 
-trueLiteral =
-  "true" !identCont inlineSpacing => { _ => BoolLiteral(true) } ;
+@memo
+localVarExpr =
+  identifier => { name => LocalVar(name.asInstanceOf[String]) } ;
 
-falseLiteral =
-  "false" !identCont inlineSpacing => { _ => BoolLiteral(false) } ;
+@memo
+instanceVarExpr =
+  instanceVarName => { name => InstanceVar(name.asInstanceOf[String]) } ;
 
-identifierExpr =
-  identifier => { name => Var(name.asInstanceOf[String]) } ;
+@memo
+classVarExpr =
+  classVarName => { name => ClassVar(name.asInstanceOf[String]) } ;
 
-// ── Integer literals ──────────────────────────────────────────────────────
+@memo
+globalVarExpr =
+  globalVarName => { name => GlobalVar(name.asInstanceOf[String]) } ;
 
-decimalDigitsRaw =
-  [0-9] ([0-9_]* [0-9])?
-  => { case d ~ rest =>
-       val tail = rest match {
-         case Some(mid ~ last) => mid.asInstanceOf[List[Any]].mkString + last.toString
-         case None             => ""
-       }
-       d.toString + tail } ;
+@memo
+variable =
+  instanceVarExpr / classVarExpr / globalVarExpr / localVarExpr ;
 
-integerLiteral =
-  decimalDigitsRaw inlineSpacing
-  => { case digits ~ _ => IntLiteral(java.lang.Long.parseLong(digits.asInstanceOf[String].replace("_",""), 10)) } ;
+@memo
+constRef =
+  constPath => { path => ConstRef(path.asInstanceOf[List[String]]) } ;
 
-// ── Float literals ────────────────────────────────────────────────────────
+// ── Parenthesized expression ─────────────────────────────────────────────
 
-floatLiteral =
-  decimalDigitsRaw "." decimalDigitsRaw inlineSpacing
-  => { case ((intPart ~ _) ~ fracPart) ~ _ =>
-       FloatLiteral((intPart.toString + "." + fracPart.toString).toDouble) } ;
+parenExprInner =
+  statementSep* (expr (statementSep+ expr)*)? statementSep*
+  => { _ => NilLiteral() } ;
 
-// ── String literals (double-quoted, no interpolation yet) ─────────────────
+parenExpr =
+  "(" spacing parenExprInner ")" inlineSpacing
+  => { _ => NilLiteral() } ;
 
-escapedChar =
-  "\\" .
-  => { case _ ~ c => c.toString match {
-       case "n"  => "\n"; case "r"  => "\r"; case "t"  => "\t"
-       case "\\" => "\\"; case "\"" => "\""; case c    => "\\" + c } } ;
+// ── Array literal ────────────────────────────────────────────────────────
 
-plainDoubleQuotedChar =
-  !("\"" / "\\") .
-  => { c => c.toString } ;
+arrayElem =
+  ( ("**" spacing expr) /
+    ("*" spacing expr) /
+    (quotedLabelSymbol spacing expr) /
+    (labelSymbol spacing expr) /
+    (expr spacing "=>" spacing expr) /
+    expr
+  ) => { _ => NilLiteral() } ;
 
-stringLiteral =
-  "\"" (escapedChar / plainDoubleQuotedChar)* "\"" inlineSpacing
-  => { case _ ~ chars ~ _ ~ _ => StringLiteral(chars.asInstanceOf[List[String]].mkString) } ;
+@memo
+arrayLiteral =
+  "[" spacing (arrayElem (spacing "," spacing arrayElem)* (spacing ",")? spacing)? "]" inlineSpacing
+  => { _ => ArrayLiteral(List.empty) } ;
 
-// ── Single-quoted strings ─────────────────────────────────────────────────
+// ── Hash literal ─────────────────────────────────────────────────────────
 
-escapedSingleQuotedChar =
-  "\\" ("'" / "\\")
-  => { case _ ~ c => c.toString } ;
+hashEntry =
+  ( ("**" spacing expr) /
+    (quotedLabelSymbol spacing expr) /
+    (labelSymbol spacing expr) /
+    (expr spacing "=>" spacing expr)
+  ) => { _ => NilLiteral() } ;
 
-plainSingleQuotedChar =
-  !("'" / "\\") .
-  => { c => c.toString } ;
+@memo
+hashLiteral =
+  "{" spacing (hashEntry (spacing "," spacing hashEntry)* (spacing ",")? spacing)? "}" inlineSpacing
+  => { _ => HashLiteral(List.empty) } ;
 
-singleQuotedStringLiteral =
-  "'" (escapedSingleQuotedChar / plainSingleQuotedChar)* "'" inlineSpacing
-  => { case _ ~ chars ~ _ ~ _ => StringLiteral(chars.asInstanceOf[List[String]].mkString) } ;
+// ── Formal parameters ────────────────────────────────────────────────────
+
+keywordParam =
+  labelNameNoSpace ":" !":" spacing expr?
+  => { _ => "" } ;
+
+destructuredParam =
+  "(" spacing formalParam (spacing "," spacing formalParam)* (spacing ",")? spacing ")"
+  => { _ => "()" } ;
+
+formalParam =
+  ( "..." /
+    ("**" spacing ("nil" !identCont / identifier)?) /
+    ("*" spacing ("nil" !identCont / identifier)?) /
+    ("&" spacing ("nil" !identCont / identifier)?) /
+    keywordParam /
+    destructuredParam /
+    (identifier (spacing "=" spacing expr)?)
+  ) => { _ => "" } ;
+
+params =
+  "(" spacing (formalParam (spacing "," spacing formalParam)* (spacing ",")? spacing)? ")" inlineSpacing
+  => { _ => List.empty[String] } ;
+
+bareParams =
+  formalParam (inlineSpacing "," inlineSpacing formalParam)+
+  => { _ => List.empty[String] } ;
+
+// ── Block parameters ─────────────────────────────────────────────────────
+
+blockFormalParam =
+  ( "..." /
+    ("**" spacing ("nil" !identCont / identifier)?) /
+    ("*" spacing ("nil" !identCont / identifier)?) /
+    ("&" spacing ("nil" !identCont / identifier)?) /
+    keywordParam /
+    destructuredParam /
+    identifier
+  ) => { _ => "" } ;
+
+blockLocalVar =
+  identifier => { _ => "" } ;
+
+blockParams =
+  "|" spacing (blockFormalParam (spacing "," spacing blockFormalParam)* (spacing ",")? spacing)?
+  (";" spacing blockLocalVar (spacing "," spacing blockLocalVar)*)? spacing "|" inlineSpacing
+  => { _ => List.empty[String] } ;
+
+// ── Rescue/ensure stop conditions ────────────────────────────────────────
+
+rescueStop =
+  ("rescue" !identCont spacing / "else" !identCont spacing / "ensure" !identCont spacing / "end" !identCont spacing)
+  => { _ => () } ;
+
+doBlockStop =
+  ("rescue" !identCont spacing / "else" !identCont spacing / "ensure" !identCont spacing / "end" !identCont spacing)
+  => { _ => () } ;
+
+endKeyword =
+  "end" !identCont spacing => { _ => () } ;
+
+rescueClause =
+  "rescue" !identCont spacing
+  (expr (spacing "," spacing expr)*)?
+  ("=>" spacing variable spacing)?
+  statementSep*
+  blockStatementsUntil(rescueStop)
+  statementSep*
+  => { _ => RescueClause(List.empty, None, List.empty) } ;
+
+// ── Lambda literal ───────────────────────────────────────────────────────
+
+lambdaLiteral =
+  "->" inlineSpacing (params / (parenExpr => { _ => List.empty[String] }))? spacing blockLiteral
+  => { _ => LambdaLiteral(List.empty, List.empty) } ;
+
+// ── Block literals ───────────────────────────────────────────────────────
+
+doBlock =
+  "do" !identCont spacing
+  statementSep*
+  blockParams?
+  statementSep*
+  blockStatementsUntil(doBlockStop)
+  statementSep*
+  rescueClause*
+  statementSep*
+  ("else" !identCont spacing statementSep* blockStatementsUntil(doBlockStop) statementSep*)?
+  ("ensure" !identCont spacing statementSep* blockStatementsUntil(endKeyword) statementSep*)?
+  endKeyword
+  => { _ => Block(List.empty, List.empty) } ;
+
+braceBlockStop =
+  "}" => { _ => () } ;
+
+braceBlock =
+  "{" inlineSpacing statementSep* blockParams? statementSep*
+  blockStatementsUntil(braceBlockStop)
+  statementSep* spacing "}" inlineSpacing
+  => { _ => Block(List.empty, List.empty) } ;
+
+blockLiteral =
+  doBlock / braceBlock ;
+
+// ── Call argument expressions ────────────────────────────────────────────
+
+callArgItem =
+  ( "..." /
+    ("&" spacing (symbolLiteral / expr)) /
+    ("**" spacing expr) /
+    ("*" spacing expr) /
+    (quotedLabelSymbol spacing expr) /
+    (labelSymbol spacing expr) /
+    (expr spacing "=>" spacing expr) /
+    expr
+  ) => { _ => NilLiteral() } ;
+
+callArgs =
+  "(" spacing (callArgItem (spacing "," spacing callArgItem)* (spacing ",")? spacing)? ")" inlineSpacing
+  => { _ => List.empty[Expr] } ;
+
+commandArgStop =
+  ("if" !identCont / "unless" !identCont / "while" !identCont / "until" !identCont / "rescue" !identCont)
+  => { _ => () } ;
+
+commandArgItem =
+  ( ("&" spacing (symbolLiteral / expr)) /
+    ("**" spacing expr) /
+    ("*" spacing expr) /
+    (quotedLabelSymbol spacing expr) /
+    (labelSymbol spacing expr) /
+    (expr spacing "=>" spacing expr) /
+    expr
+  ) => { _ => NilLiteral() } ;
+
+commandArgs =
+  !(commandArgStop) commandArgItem (inlineSpacing "," spacing commandArgItem)*
+  => { _ => List.empty[Expr] } ;
+
+subscriptArgs =
+  "[" spacing (callArgItem (spacing "," spacing callArgItem)* (spacing ",")? spacing)? "]" inlineSpacing
+  => { _ => List.empty[Expr] } ;
+
+// ── Member access / dot separator ────────────────────────────────────────
+
+dotSep =
+  ( (inlineSpacing ("&." / "::" / ".") inlineSpacing) /
+    (inlineSpacing "\n" inlineSpacing ("&." / "::" / ".") inlineSpacing)
+  ) => { _ => "." } ;
+
+// ── Primary expression ───────────────────────────────────────────────────
+
+@memo
+primaryExpr =
+  ( lambdaLiteral /
+    singletonClassExpr /
+    beginExpr /
+    defExprForm /
+    returnExpr /
+    yieldExpr /
+    ifExpr /
+    unlessExpr /
+    caseExpr /
+    selfExpr /
+    boolLiteral /
+    nilLiteral /
+    constRef /
+    variable /
+    floatLiteral /
+    integerLiteral /
+    charLiteral /
+    stringLiteral /
+    singleQuotedStringLiteral /
+    backtickLiteral /
+    percentCommand /
+    percentQuotedStringLiteral /
+    percentSymbolLiteralExpr /
+    percentWordArray /
+    percentSymbolArray /
+    regexLiteral /
+    symbolLiteral /
+    arrayLiteral /
+    hashLiteral /
+    parenExpr
+  ) ;
+
+// ── Call suffixes ────────────────────────────────────────────────────────
+
+methodName =
+  ( symbolOperatorName /
+    constNameNoSpace /
+    methodIdentifierRaw /
+    ("private" !identCont / "public" !identCont / "protected" !identCont /
+     "ruby2_keywords" !identCont / "class" !identCont / "def" !identCont /
+     "begin" !identCont / "end" !identCont / "for" !identCont / "self" !identCont)
+  ) inlineSpacing => { _ => "" } ;
+
+callSuffix =
+  ( (dotSep methodName callArgs?) /
+    (dotSep callArgs) /
+    subscriptArgs /
+    (inlineSpacing blockLiteral)
+  ) => { _ => () } ;
+
+functionCallExpr =
+  methodIdentifierRaw inlineSpacing callArgs
+  => { _ => NilLiteral() } ;
+
+commandCallExpr =
+  methodIdentifierRaw spacing1 commandArgs
+  => { _ => NilLiteral() } ;
+
+@memo
+postfixExpr =
+  (functionCallExpr / commandCallExpr / primaryExpr)
+  callSuffix*
+  => { _ => NilLiteral() } ;
+
+// ── Operator precedence hierarchy ─────────────────────────────────────────
+
+@memo
+powerExpr =
+  postfixExpr ("**" spacing powerExpr)?
+  => { _ => NilLiteral() } ;
+
+unaryOpSym =
+  ("not" !identCont spacing / "!" / "~" / "-" / "+" / "*")
+  => { _ => "" } ;
+
+@memo
+unaryExpr =
+  (unaryOpSym spacing unaryExpr / powerExpr)
+  => { _ => NilLiteral() } ;
+
+@memo
+mulDivExpr =
+  unaryExpr (("*" !"=" / "/" !("=" / "}") / "%" !"=") spacing unaryExpr)*
+  => { _ => NilLiteral() } ;
+
+@memo
+addSubExpr =
+  mulDivExpr (("+" !("=" / "@") / "-" !("=" / "@" / ">")) spacing mulDivExpr)*
+  => { _ => NilLiteral() } ;
+
+@memo
+shiftExpr =
+  addSubExpr (("<<" / ">>") !"=" spacing addSubExpr)*
+  => { _ => NilLiteral() } ;
+
+@memo
+bitAndExpr =
+  shiftExpr ("&" !("&" / "=") spacing shiftExpr)*
+  => { _ => NilLiteral() } ;
+
+@memo
+bitOrExpr =
+  bitAndExpr (("|" !("=" / "|") / "^" !"=") spacing bitAndExpr)*
+  => { _ => NilLiteral() } ;
+
+@memo
+relationalExpr =
+  bitOrExpr (("<=" / ">=" / "<" !("<" / "=") / ">" !(">" / "=")) spacing bitOrExpr)*
+  => { _ => NilLiteral() } ;
+
+@memo
+equalityExpr =
+  relationalExpr (("===" / "<=>" / "=~" / "!~" / "!=" / "==") spacing relationalExpr)*
+  => { _ => NilLiteral() } ;
+
+rangeOp =
+  ("..." / "..") => { s => s } ;
+
+@memo
+rangeExpr =
+  ( (rangeOp spacing equalityExpr) /
+    (equalityExpr (rangeOp spacing equalityExpr?)?)
+  ) => { _ => NilLiteral() } ;
+
+@memo
+andExpr =
+  rangeExpr ("&&" !"=" spacing rangeExpr)*
+  => { _ => NilLiteral() } ;
+
+@memo
+orExpr =
+  andExpr ("||" !"=" spacing andExpr)*
+  => { _ => NilLiteral() } ;
+
+// Pattern expressions
+inPatternPrimary =
+  ( constRef /
+    variable /
+    symbolLiteral /
+    stringLiteral /
+    singleQuotedStringLiteral /
+    nilLiteral /
+    boolLiteral /
+    integerLiteral /
+    floatLiteral /
+    ("^" spacing postfixExpr) /
+    parenExpr /
+    ("[" spacing (inPatternListElem (spacing "," spacing inPatternListElem)* (spacing ",")? spacing)? "]" inlineSpacing) /
+    ("{" spacing (inPatternHashEntry (spacing "," spacing inPatternHashEntry)* (spacing ",")? spacing)? "}" inlineSpacing) /
+    (constRef "(" spacing (inPatternListElem (spacing "," spacing inPatternListElem)* (spacing ",")? spacing)? ")" inlineSpacing) /
+    ("*" spacing (("nil" !identCont inlineSpacing) / variable)?)
+  ) => { _ => NilLiteral() } ;
+
+inPatternHashEntry =
+  ( ("**" spacing (("nil" !identCont inlineSpacing) / variable)?) /
+    (quotedLabelSymbol spacing inPatternPrimary) /
+    (labelSymbol spacing inPatternPrimary) /
+    (labelSymbol) /
+    (expr spacing "=>" spacing inPatternPrimary)
+  ) => { _ => NilLiteral() } ;
+
+inPatternListElem =
+  ("*" spacing (("nil" !identCont inlineSpacing) / variable)? / inPatternOrExpr)
+  => { _ => NilLiteral() } ;
+
+inPatternOrExpr =
+  inPatternPrimary (spacing "|" spacing inPatternPrimary)*
+  => { _ => NilLiteral() } ;
+
+inPatternExpr =
+  inPatternOrExpr (spacing "=>" spacing variable)?
+  (spacing ("if" !identCont / "unless" !identCont) spacing expr)?
+  => { _ => NilLiteral() } ;
+
+inMatchExpr =
+  orExpr ("in" !identCont spacing inPatternExpr)?
+  => { _ => NilLiteral() } ;
+
+@memo
+conditionalExpr =
+  inMatchExpr (spacing "?" spacing conditionalExpr spacing ":" !":" spacing conditionalExpr)?
+  => { _ => NilLiteral() } ;
+
+// ── Assignment expressions ─────────────────────────────────────────────────
+
+compoundAssignOp =
+  ("<<=" / ">>=" / "+=" / "-=" / "*=" / "/=" / "%=" / "&=" / "|=" / "^=" / "**=")
+  => { s => s } ;
+
+assignableTarget =
+  (instanceVarExpr / classVarExpr / globalVarExpr / constRef / localVarExpr)
+  => { _ => NilLiteral() } ;
+
+assignValueExpr =
+  ("*" spacing conditionalExpr / conditionalExpr) (spacing "," spacing ("*" spacing conditionalExpr / conditionalExpr))*
+  => { _ => NilLiteral() } ;
+
+@memo
+chainedAssignRhs =
+  ( (postfixExpr dotSep methodName assignEq spacing chainedAssignRhs) /
+    (postfixExpr dotSep methodName compoundAssignOp spacing chainedAssignRhs) /
+    (postfixExpr dotSep methodName ("||=" / "&&=") spacing chainedAssignRhs) /
+    (assignableTarget subscriptArgs assignEq spacing chainedAssignRhs) /
+    (assignableTarget subscriptArgs compoundAssignOp spacing chainedAssignRhs) /
+    (assignableTarget subscriptArgs ("||=" / "&&=") spacing chainedAssignRhs) /
+    (assignableTarget compoundAssignOp spacing chainedAssignRhs) /
+    (assignableTarget ("||=" / "&&=") spacing chainedAssignRhs) /
+    (assignableTarget assignEq spacing chainedAssignRhs) /
+    conditionalExpr
+  ) => { _ => NilLiteral() } ;
+
+multiAssignElem =
+  ( ("*" spacing assignableTarget?) /
+    ("(" spacing multiAssignElem (spacing "," spacing multiAssignElem)* (spacing ",")? spacing ")") /
+    assignableTarget
+  ) => { _ => "" } ;
+
+multiAssignTargets =
+  ( (multiAssignElem (spacing "," spacing multiAssignElem)+ (spacing ",")?) /
+    (multiAssignElem spacing ",") /
+    ("*" spacing assignableTarget?)
+  ) => { _ => List.empty[String] } ;
+
+assignmentExpr =
+  ( (postfixExpr dotSep methodName assignEq spacing assignValueExpr) /
+    (postfixExpr dotSep methodName compoundAssignOp spacing chainedAssignRhs) /
+    (postfixExpr dotSep methodName ("||=" / "&&=") spacing chainedAssignRhs) /
+    (assignableTarget subscriptArgs assignEq spacing assignValueExpr) /
+    (assignableTarget subscriptArgs compoundAssignOp spacing chainedAssignRhs) /
+    (assignableTarget subscriptArgs ("||=" / "&&=") spacing chainedAssignRhs) /
+    (multiAssignTargets assignEq spacing assignValueExpr) /
+    (assignableTarget compoundAssignOp spacing chainedAssignRhs) /
+    (assignableTarget ("||=" / "&&=") spacing chainedAssignRhs) /
+    (assignableTarget assignEq spacing assignValueExpr) /
+    conditionalExpr
+  ) => { _ => NilLiteral() } ;
+
+@memo
+expr =
+  assignmentExpr (("and" !identCont / "or" !identCont) spacing assignmentExpr)*
+  => { _ => NilLiteral() } ;
+
+// ── Inline expression-forms of compound statements ────────────────────────
+
+beginExpr =
+  "begin" !identCont spacing
+  statementSep*
+  blockStatementsUntil(rescueStop / endKeyword)
+  statementSep*
+  rescueClause*
+  statementSep*
+  ("else" !identCont spacing statementSep* blockStatementsUntil(doBlockStop) statementSep*)?
+  ("ensure" !identCont spacing statementSep* blockStatementsUntil(endKeyword) statementSep*)?
+  endKeyword
+  => { _ => NilLiteral() } ;
+
+defExprForm =
+  defStmt => { _ => NilLiteral() } ;
+
+returnExpr =
+  "return" !identCont inlineSpacing
+  (!(commandArgStop) expr (spacing "," spacing expr)*)?
+  => { _ => NilLiteral() } ;
+
+yieldExpr =
+  "yield" !identCont inlineSpacing callArgs?
+  => { _ => NilLiteral() } ;
+
+singletonClassExpr =
+  "class" !identCont spacing "<<" spacing expr statementSep*
+  blockStatementsUntil(endKeyword)
+  statementSep* endKeyword
+  => { _ => NilLiteral() } ;
+
+ifElsifElse =
+  ( ("elsif" !identCont spacing expr
+     ("then" !identCont spacing / inlineSpacing statementSep+)
+     statementSep*
+     blockStatementsUntil("elsif" !identCont spacing / "else" !identCont spacing / endKeyword)
+     statementSep*
+     ifElsifElse) /
+    ("else" !identCont spacing statementSep*
+     blockStatementsUntil(endKeyword) statementSep*)
+  )?
+  => { _ => List.empty[Statement] } ;
+
+ifExpr =
+  "if" !identCont spacing expr
+  ("then" !identCont spacing / inlineSpacing statementSep+ / inlineSpacing ";")
+  statementSep*
+  blockStatementsUntil("elsif" !identCont spacing / "else" !identCont spacing / endKeyword)
+  statementSep*
+  ifElsifElse
+  endKeyword
+  => { _ => NilLiteral() } ;
+
+unlessExpr =
+  "unless" !identCont spacing expr
+  ("then" !identCont spacing / inlineSpacing statementSep+ / inlineSpacing ";")
+  statementSep*
+  blockStatementsUntil("else" !identCont spacing / endKeyword)
+  statementSep*
+  ("else" !identCont spacing statementSep* blockStatementsUntil(endKeyword) statementSep*)?
+  endKeyword
+  => { _ => NilLiteral() } ;
+
+whenClause =
+  ("when" !identCont / "in" !identCont) spacing
+  inPatternExpr (spacing "," spacing inPatternExpr)*
+  (inlineSpacing (";" / "then" !identCont) spacing)?
+  statementSep*
+  blockStatementsUntil("when" !identCont spacing / "in" !identCont spacing / "else" !identCont spacing / endKeyword)
+  statementSep*
+  => { _ => WhenClause(List.empty, List.empty) } ;
+
+caseExpr =
+  "case" !identCont spacing expr? statementSep*
+  whenClause+
+  ("else" !identCont spacing statementSep* blockStatementsUntil(endKeyword) statementSep*)?
+  endKeyword
+  => { _ => NilLiteral() } ;
+
+// ── Statement-level constructs ─────────────────────────────────────────────
+
+modifierSuffix =
+  ( ("if" !identCont spacing expr) /
+    ("unless" !identCont spacing expr) /
+    ("while" !identCont spacing expr) /
+    ("until" !identCont spacing expr) /
+    ("rescue" !identCont spacing expr)
+  ) => { _ => () } ;
+
+returnStmt =
+  "return" !identCont inlineSpacing
+  (!(commandArgStop) expr (spacing "," spacing expr)*)?
+  => { _ => Return(None) } ;
+
+retryStmt =
+  "retry" !identCont inlineSpacing => { _ => Retry() } ;
+
+breakStmt =
+  "break" !identCont inlineSpacing (!(commandArgStop) expr (spacing "," spacing expr)*)?
+  => { _ => ExprStmt(NilLiteral()) } ;
+
+nextStmt =
+  "next" !identCont inlineSpacing (!(commandArgStop) expr (spacing "," spacing expr)*)?
+  => { _ => ExprStmt(NilLiteral()) } ;
+
+yieldStmt =
+  "yield" !identCont inlineSpacing callArgs?
+  => { _ => ExprStmt(NilLiteral()) } ;
+
+aliasNamePart =
+  (symbolLiteral / (symbolOperatorName inlineSpacing) / (methodIdentifierRaw inlineSpacing) / globalVarName)
+  => { _ => SymbolLiteral("", UnknownSpan) } ;
+
+aliasStmt =
+  "alias" !identCont spacing aliasNamePart spacing aliasNamePart
+  => { _ => ExprStmt(NilLiteral()) } ;
+
+defReceiverPart =
+  ( ("(" spacing expr spacing ")") /
+    (constPathNoSpace inlineSpacing) /
+    ("self" !identCont inlineSpacing) /
+    ("nil" !identCont inlineSpacing) /
+    ("true" !identCont inlineSpacing) /
+    ("false" !identCont inlineSpacing) /
+    instanceVarName / classVarName / globalVarName /
+    identifier
+  ) => { _ => "" } ;
+
+defMethodNamePart =
+  ( symbolOperatorName /
+    ("`" (!"`" .)* "`") /
+    methodIdentifierRaw /
+    ("private" !identCont / "public" !identCont / "protected" !identCont /
+     "ruby2_keywords" !identCont / "class" !identCont / "def" !identCont /
+     "begin" !identCont / "end" !identCont / "for" !identCont / "self" !identCont)
+  ) inlineSpacing => { _ => "" } ;
+
+defNamePart =
+  (defReceiverPart "." spacing defMethodNamePart / defMethodNamePart)
+  => { _ => "" } ;
+
+defStmt =
+  ("private" !identCont spacing / "public" !identCont spacing / "protected" !identCont spacing / "ruby2_keywords" !identCont spacing)?
+  "def" !identCont spacing
+  defNamePart
+  (params / (spacing1 bareParams))?
+  spacing
+  ( (assignEq spacing expr) /
+    ( statementSep*
+      blockStatementsUntil(rescueStop / endKeyword)
+      statementSep*
+      rescueClause*
+      statementSep*
+      ("else" !identCont spacing statementSep* blockStatementsUntil(doBlockStop) statementSep*)?
+      ("ensure" !identCont spacing statementSep* blockStatementsUntil(endKeyword) statementSep*)?
+      endKeyword
+    )
+  )
+  => { _ => Def("", List.empty, List.empty) } ;
+
+singletonClassStmt =
+  "class" !identCont spacing "<<" spacing expr statementSep*
+  blockStatementsUntil(endKeyword)
+  statementSep* endKeyword callSuffix*
+  => { _ => SingletonClassDef(NilLiteral(), List.empty) } ;
+
+classStmt =
+  "class" !identCont spacing constPath
+  ("<" !"<" spacing expr)?
+  statementSep*
+  blockStatementsUntil(endKeyword)
+  statementSep* endKeyword
+  => { _ => ClassDef("", List.empty) } ;
+
+moduleStmt =
+  "module" !identCont spacing constPath
+  statementSep*
+  blockStatementsUntil(endKeyword)
+  statementSep* endKeyword
+  => { _ => ModuleDef("", List.empty) } ;
+
+whileStmt =
+  "while" !identCont spacing expr
+  (("do" !identCont / "then" !identCont) spacing / inlineSpacing statementSep+)?
+  statementSep*
+  blockStatementsUntil(endKeyword)
+  statementSep* endKeyword
+  => { _ => WhileExpr(NilLiteral(), List.empty) } ;
+
+untilStmt =
+  "until" !identCont spacing expr
+  (("do" !identCont / "then" !identCont) spacing / inlineSpacing statementSep+)?
+  statementSep*
+  blockStatementsUntil(endKeyword)
+  statementSep* endKeyword
+  => { _ => UntilExpr(NilLiteral(), List.empty) } ;
+
+forBindingTarget =
+  (multiAssignTargets / assignableTarget)
+  => { _ => "" } ;
+
+forStmt =
+  "for" !identCont spacing forBindingTarget spacing "in" !identCont spacing expr
+  (("do" !identCont / "then" !identCont) spacing / inlineSpacing statementSep+)?
+  statementSep*
+  blockStatementsUntil(endKeyword)
+  statementSep* endKeyword
+  => { _ => ForIn("", NilLiteral(), List.empty) } ;
+
+beginStmt =
+  "begin" !identCont spacing
+  statementSep*
+  blockStatementsUntil(rescueStop / endKeyword)
+  statementSep*
+  rescueClause*
+  statementSep*
+  ("else" !identCont spacing statementSep* blockStatementsUntil(doBlockStop) statementSep*)?
+  ("ensure" !identCont spacing statementSep* blockStatementsUntil(endKeyword) statementSep*)?
+  endKeyword
+  => { _ => ExprStmt(NilLiteral()) } ;
+
+ifStmt =
+  "if" !identCont spacing expr
+  ("then" !identCont spacing / inlineSpacing statementSep+ / inlineSpacing ";")
+  statementSep*
+  blockStatementsUntil("elsif" !identCont spacing / "else" !identCont spacing / endKeyword)
+  statementSep*
+  ifElsifElse
+  endKeyword
+  => { _ => IfExpr(NilLiteral(), List.empty, List.empty) } ;
+
+unlessStmt =
+  "unless" !identCont spacing expr
+  ("then" !identCont spacing / inlineSpacing statementSep+ / inlineSpacing ";")
+  statementSep*
+  blockStatementsUntil("else" !identCont spacing / endKeyword)
+  statementSep*
+  ("else" !identCont spacing statementSep* blockStatementsUntil(endKeyword) statementSep*)?
+  endKeyword
+  => { _ => UnlessExpr(NilLiteral(), List.empty, List.empty) } ;
+
+caseStmt =
+  "case" !identCont spacing expr? statementSep*
+  whenClause+
+  ("else" !identCont spacing statementSep* blockStatementsUntil(endKeyword) statementSep*)?
+  endKeyword
+  => { _ => CaseExpr(None, List.empty, List.empty) } ;
+
+rightwardAssignStmt =
+  conditionalExpr spacing "=>" spacing inPatternExpr
+  => { _ => ExprStmt(NilLiteral()) } ;
+
+exprStatement =
+  expr (spacing1 commandArgs)?
+  inlineSpacing
+  => { _ => ExprStmt(NilLiteral()) } ;
+
+@memo
+statement =
+  ( returnStmt /
+    retryStmt /
+    breakStmt /
+    nextStmt /
+    yieldStmt /
+    aliasStmt /
+    beginStmt /
+    whileStmt /
+    untilStmt /
+    forStmt /
+    caseStmt /
+    singletonClassStmt /
+    classStmt /
+    moduleStmt /
+    defStmt /
+    ifStmt /
+    unlessStmt /
+    rightwardAssignStmt /
+    exprStatement
+  ) (inlineSpacing modifierSuffix)*
+  => { _ => ExprStmt(NilLiteral()) } ;
+
+// ── Top-level program ─────────────────────────────────────────────────────
+
+topLevelStatements =
+  statementSep* (statement (statementSep+ statement)*)? statementSep*
+  => { _ => List.empty[Statement] } ;
+
+program =
+  spacing ~> topLevelStatements <~ spacing
+  => { _ => Program(List.empty) } ;

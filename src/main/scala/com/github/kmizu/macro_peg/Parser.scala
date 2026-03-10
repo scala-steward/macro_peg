@@ -89,9 +89,9 @@ object Parser {
     lazy val ScalaDoubleQuoteStr: Parser[String] = rule(
       (chr('"') ~ ScalaStrChar.* ~ chr('"')) ^^ { case _ ~ cs ~ _ => "\"" + cs.mkString + "\"" }
     )
-    lazy val ScalaStrChar: Parser[Char] = rule(
-        (chr('\\') ~ any) ^^ { case _ ~ c => c }
-      | (not(chr('"')) ~> any)
+    lazy val ScalaStrChar: Parser[String] = rule(
+        (chr('\\') ~ any) ^^ { case _ ~ c => "\\" + c.toString }
+      | (not(chr('"')) ~> any) ^^ { _.toString }
     )
     lazy val ScalaLineCommentChunk: Parser[String] = rule(
       (string("//") ~ (not(EndOfLine) ~> any).*) ^^ { case _ ~ cs => "//" + cs.mkString }

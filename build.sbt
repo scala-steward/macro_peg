@@ -26,6 +26,9 @@ libraryDependencies ++= Seq(
   "org.scalacheck" %% "scalacheck" % "1.19.0" % "test"
 )
 
+Test / fork := true
+Test / javaOptions += "-Xss128m"
+
 
 initialCommands in console += {
   Iterator(
