@@ -1,3 +1,5 @@
+import ReleaseTransformations._
+
 organization := "com.github.kmizu"
 
 name := "macro_peg"
@@ -89,3 +91,18 @@ credentials ++= {
 }
 
 pgpPassphrase := sys.env.get("PGP_PASSPHRASE").map(_.toArray)
+
+releaseProcess := Seq[ReleaseStep](
+  checkSnapshotDependencies,
+  inquireVersions,
+  runClean,
+  runTest,
+  setReleaseVersion,
+  commitReleaseVersion,
+  tagRelease,
+  releaseStepCommandAndRemaining("publishSigned"),
+  releaseStepCommand("sonatypeReleaseAll"),
+  setNextVersion,
+  commitNextVersion,
+  pushChanges
+)
