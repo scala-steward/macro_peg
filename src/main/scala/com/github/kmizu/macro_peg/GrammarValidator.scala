@@ -34,6 +34,7 @@ object GrammarValidator {
       case ActionBlock(_, b, _) => undefinedReference(b, env)
       case LeftProject(_, l, r) => undefinedReference(l, env).orElse(undefinedReference(r, env))
       case RightProject(_, l, r) => undefinedReference(l, env).orElse(undefinedReference(r, env))
+      case IgnoredExpr(_, e) => undefinedReference(e, env)
       case _ => None
     }
 
@@ -65,6 +66,7 @@ object GrammarValidator {
       case ActionBlock(_, b, _) => exprNullable(b, env)
       case LeftProject(_, l, r) => exprNullable(l, env) && exprNullable(r, env)
       case RightProject(_, l, r) => exprNullable(l, env) && exprNullable(r, env)
+      case IgnoredExpr(_, e) => exprNullable(e, env)
     }
 
     var changed = true
@@ -102,6 +104,7 @@ object GrammarValidator {
       case ActionBlock(_, b, _) => nullableRepetition(b, env)
       case LeftProject(_, l, r) => nullableRepetition(l, env).orElse(nullableRepetition(r, env))
       case RightProject(_, l, r) => nullableRepetition(l, env).orElse(nullableRepetition(r, env))
+      case IgnoredExpr(_, e) => nullableRepetition(e, env)
       case _ => None
     }
 
@@ -144,6 +147,7 @@ object GrammarValidator {
       case RightProject(_, l, r) =>
         leadsToSelf(sym, l, env, visited)
           .orElse(if(nullableExpression(l, env)) leadsToSelf(sym, r, env, visited) else None)
+      case IgnoredExpr(_, e) => leadsToSelf(sym, e, env, visited)
       case _ => None
     }
 

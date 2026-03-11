@@ -207,6 +207,7 @@ object Parser {
       loc ~ Primary <~ QUESTION ^^ { case pos ~ e => Optional(Position(pos.line, pos.column), e) }
     | loc ~ Primary <~ STAR ^^ { case pos ~ e => Repeat0(Position(pos.line, pos.column), e) }
     | loc ~ Primary <~ PLUS ^^ { case pos ~ e => Repeat1(Position(pos.line, pos.column), e) }
+    | loc ~ Primary <~ (chr(':') ~ string("ign") ~ Spacing) ^^ { case pos ~ e => IgnoredExpr(Position(pos.line, pos.column), e) }
     | Primary
     )
     lazy val Primary: Parser[Expression]    = rule(

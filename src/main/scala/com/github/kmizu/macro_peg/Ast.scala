@@ -272,6 +272,9 @@ object Ast {
   /** Right projection: `e1 ~> e2` — parse both, keep e2's result */
   case class RightProject(pos: Position, lhs: Expression, rhs: Expression) extends Expression
 
+  /** Ignored expression: `e:ign` — parse e but exclude its value from the ~ tuple */
+  case class IgnoredExpr(pos: Position, expr: Expression) extends Expression
+
   sealed abstract class Type(pos: Position)
   case class SimpleType(pos: Position) extends Type(pos)
   case class RuleType(pos: Position, paramTypes: List[Type], resultType: Type) extends Type(pos)

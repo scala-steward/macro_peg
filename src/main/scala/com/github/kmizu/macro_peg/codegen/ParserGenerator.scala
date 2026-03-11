@@ -107,6 +107,7 @@ object ParserGenerator {
     case Debug(_, b) => containsNewFeatures(b)
     case Function(_, _, body) => containsNewFeatures(body)
     case Call(_, _, args) => args.exists(containsNewFeatures)
+    case IgnoredExpr(_, e) => containsNewFeatures(e)
     case _ => false
   }
 
@@ -159,6 +160,7 @@ object ParserGenerator {
         case ActionBlock(p, b, c)   => ActionBlock(p, substitute(b, env), c)
         case LeftProject(p, l, r)   => LeftProject(p, substitute(l, env), substitute(r, env))
         case RightProject(p, l, r)  => RightProject(p, substitute(l, env), substitute(r, env))
+        case IgnoredExpr(p, e)      => IgnoredExpr(p, substitute(e, env))
         case Debug(p, b)            => Debug(p, substitute(b, env))
         case Identifier(_, name)    => env.getOrElse(name, exp)
         case Call(pos, name, args)  =>
@@ -193,9 +195,23 @@ object ParserGenerator {
         val check = if (positive) sortedPred else s"!($sortedPred)"
         s"(if ($pos < input.length && { val _c = input.charAt($pos); $check }) Some((input.charAt($pos).toString, $pos + 1)) else None)"
 
+      // Sequence with one side ignored: collapse to LeftProject or RightProject
+      case Sequence(_, l, IgnoredExpr(_, r)) =>
+        val (r1, p1, p2) = (fresh("r"), fresh("p"), fresh("p"))
+        s"${genExpr(l, pos)}.flatMap { case ($r1, $p1) => ${genExpr(r, p1)}.map { case (_, $p2) => ($r1, $p2) } }"
+
+      case Sequence(_, IgnoredExpr(_, l), r) =>
+        val p1 = fresh("p")
+        s"${genExpr(l, pos)}.flatMap { case (_, $p1) => ${genExpr(r, p1)} }"
+
       case Sequence(_, l, r) =>
         val (r1, p1, r2, p2) = (fresh("r"), fresh("p"), fresh("r"), fresh("p"))
         s"${genExpr(l, pos)}.flatMap { case ($r1, $p1) => ${genExpr(r, p1)}.map { case ($r2, $p2) => (new ~($r1, $r2), $p2) } }"
+
+      // Standalone IgnoredExpr: match but return Unit
+      case IgnoredExpr(_, e) =>
+        val p1 = fresh("p")
+        s"${genExpr(e, pos)}.map { case (_, $p1) => ((), $p1) }"
 
       case LeftProject(_, l, r) =>
         val (r1, p1, p2) = (fresh("r"), fresh("p"), fresh("p"))

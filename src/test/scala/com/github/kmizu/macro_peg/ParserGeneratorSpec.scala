@@ -27,6 +27,31 @@ class ParserGeneratorSpec extends AnyFunSpec with Diagrams {
       assert(code.contains("F(x) = x;"))
     }
 
+    it("generates code where :ign removes element from ~ tuple (right side ignored)") {
+      // "hello":ign "world" — action sees only "world", not ("hello" ~ "world")
+      val source = """
+%object TestIgn;
+%start foo;
+foo = "hello":ign "world" => { w => w } ;
+"""
+      val result = ParserGenerator.generateFromSource(source)
+      assert(result.isRight, result.left.toOption.getOrElse(""))
+      val code = result.toOption.get
+      // Should use projection (map with _ for ignored side), NOT new ~
+      assert(!code.contains("new ~(_r"), "ignored element should not appear in ~ pair")
+    }
+
+    it("generates code where :ign removes element from ~ tuple (left side ignored)") {
+      // "open":ign content "close":ign — action sees only content
+      val source = """
+%object TestIgn2;
+%start bar;
+bar = "(" :ign [a-z]+ ")" :ign => { cs => cs } ;
+"""
+      val result = ParserGenerator.generateFromSource(source)
+      assert(result.isRight, result.left.toOption.getOrElse(""))
+    }
+
     it("generates interpreter-backed code for lambda style higher-order grammar") {
       val source = """|
         |S = Double((x -> x x), "aa") !.;
