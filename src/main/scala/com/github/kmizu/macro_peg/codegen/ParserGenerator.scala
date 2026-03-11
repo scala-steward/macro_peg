@@ -180,20 +180,28 @@ object ParserGenerator {
     def genExpr(exp: Expression, pos: String): String = exp match {
       case StringLiteral(_, s) =>
         val esc = escapeString(s)
-        s"""(if (input.startsWith("$esc", $pos)) Some(("$esc", $pos + ${s.length})) else None)"""
+        val label = esc.replace("\\", "\\\\").replace("\"", "\\\"")
+        s"""(if (input.startsWith("$esc", $pos)) Some(("$esc", $pos + ${s.length})) else _fail($pos, "\\"$label\\""))"""
 
       case Wildcard(_) =>
-        s"(if ($pos < input.length) Some((input.charAt($pos).toString, $pos + 1)) else None)"
+        s"(if ($pos < input.length) Some((input.charAt($pos).toString, $pos + 1)) else _fail($pos, \"any character\"))"
 
       case CharClass(_, positive, elems) =>
         val pred = charClassPred(elems)
         val check = if (positive) pred else s"!($pred)"
-        s"(if ($pos < input.length && { val _c = input.charAt($pos); $check }) Some((input.charAt($pos).toString, $pos + 1)) else None)"
+        val desc = (if (positive) "" else "^") + elems.map {
+          case OneChar(c) => c.toString
+          case CharRange(lo, hi) => s"$lo-$hi"
+        }.mkString
+        val descEsc = desc.replace("\\", "\\\\").replace("\"", "\\\"")
+        s"(if ($pos < input.length && { val _c = input.charAt($pos); $check }) Some((input.charAt($pos).toString, $pos + 1)) else _fail($pos, \"[$descEsc]\"))"
 
       case CharSet(_, positive, elems) =>
         val sortedPred = elems.toList.sorted.map(ch => s"(_c == ${charLiteralS(ch)})").mkString(" || ")
         val check = if (positive) sortedPred else s"!($sortedPred)"
-        s"(if ($pos < input.length && { val _c = input.charAt($pos); $check }) Some((input.charAt($pos).toString, $pos + 1)) else None)"
+        val desc = (if (positive) "" else "^") + elems.toList.sorted.mkString
+        val descEsc = desc.replace("\\", "\\\\").replace("\"", "\\\"")
+        s"(if ($pos < input.length && { val _c = input.charAt($pos); $check }) Some((input.charAt($pos).toString, $pos + 1)) else _fail($pos, \"[$descEsc]\"))"
 
       // Sequence with one side ignored: collapse to LeftProject or RightProject
       case Sequence(_, l, IgnoredExpr(_, r)) =>
@@ -222,7 +230,9 @@ object ParserGenerator {
         s"${genExpr(l, pos)}.flatMap { case (_, $p1) => ${genExpr(r, p1)} }"
 
       case Alternation(_, l, r) =>
-        s"(${genExpr(l, pos)}).orElse(${genExpr(r, pos)})"
+        val v = fresh("v")
+        val sc = fresh("sc")
+        s"""{ val $sc = _failState.get().committed; _failState.set(_failState.get().copy(committed = false)); val $v = ${genExpr(l, pos)}; if ($v.isDefined || _failState.get().committed) $v else { _failState.set(_failState.get().copy(committed = $sc)); ${genExpr(r, pos)} } }"""
 
       case Repeat0(_, b) =>
         val (rs, cp, st, np, go) = (fresh("rs"), fresh("cp"), fresh("st"), fresh("np"), fresh("go"))
@@ -281,13 +291,50 @@ object ParserGenerator {
       if (rule.args.nonEmpty) return ""
       val method = parseMethodName(rule.name)
       val bodyCode = genExpr(rule.body, "pos")
+      val isCut   = rule.annotations.exists(_.isInstanceOf[CutAnnotation])
+      val labelOpt = rule.annotations.collectFirst { case LabelAnnotation(_, n) => n }
       val body = memoIdMap.get(rule.name) match {
         case Some(id) =>
           s"_withMemo($id, pos) {\n    $bodyCode\n  }"
         case None =>
           bodyCode
       }
-      s"  def $method(input: String, pos: Int): Option[(Any, Int)] = $body"
+      // Build wrapper based on annotations
+      (isCut, labelOpt) match {
+        case (false, None) =>
+          s"  def $method(input: String, pos: Int): Option[(Any, Int)] = $body"
+        case (true, None) =>
+          s"""  def $method(input: String, pos: Int): Option[(Any, Int)] = {
+             |    val _savedOff = _failState.get().offset
+             |    val _r = $body
+             |    if (_r.isEmpty) { val _fs = _failState.get(); if (_fs.offset > _savedOff) _failState.set(_fs.copy(committed = true)) }
+             |    _r
+             |  }""".stripMargin
+        case (false, Some(lbl)) =>
+          val lblEsc = lbl.replace("\\", "\\\\").replace("\"", "\\\"")
+          s"""  def $method(input: String, pos: Int): Option[(Any, Int)] = {
+             |    _pushRule("$lblEsc")
+             |    try {
+             |      val _r = $body
+             |      if (_r.isEmpty) { val _fs = _failState.get(); if (_fs.offset == pos) _failState.set(_fs.copy(expected = List("$lblEsc"))) }
+             |      _r
+             |    } finally { _popRule() }
+             |  }""".stripMargin
+        case (true, Some(lbl)) =>
+          val lblEsc = lbl.replace("\\", "\\\\").replace("\"", "\\\"")
+          s"""  def $method(input: String, pos: Int): Option[(Any, Int)] = {
+             |    _pushRule("$lblEsc")
+             |    val _savedOff = _failState.get().offset
+             |    try {
+             |      val _r = $body
+             |      if (_r.isEmpty) { val _fs = _failState.get()
+             |        if (_fs.offset > _savedOff) _failState.set(_fs.copy(committed = true))
+             |        else if (_fs.offset == pos) _failState.set(_fs.copy(expected = List("$lblEsc")))
+             |      }
+             |      _r
+             |    } finally { _popRule() }
+             |  }""".stripMargin
+      }
     }
 
     val directives   = grammar.directives
@@ -301,6 +348,35 @@ object ParserGenerator {
 
     val packageLine  = pkgName.map(p => s"package $p\n\n").getOrElse("")
     val importSection = if (imports.nonEmpty) imports.mkString("\n") + "\n\n" else ""
+
+    val errorInfra =
+      s"""  private case class _FailState(offset: Int, expected: List[String], committed: Boolean)
+         |  private val _failState = new ThreadLocal[_FailState] {
+         |    override def initialValue() = _FailState(0, Nil, false)
+         |  }
+         |  private val _ruleStack = new ThreadLocal[List[String]] {
+         |    override def initialValue() = Nil
+         |  }
+         |  private def _fail(pos: Int, expected: String): None.type = {
+         |    val fs = _failState.get()
+         |    if (pos > fs.offset) _failState.set(_FailState(pos, List(expected), false))
+         |    else if (pos == fs.offset && !fs.expected.contains(expected)) _failState.set(fs.copy(expected = fs.expected :+ expected))
+         |    None
+         |  }
+         |  private def _pushRule(name: String): Unit = _ruleStack.set(name :: _ruleStack.get())
+         |  private def _popRule(): Unit = { val s = _ruleStack.get(); if (s.nonEmpty) _ruleStack.set(s.tail) }
+         |  private def _formatError(input: String, fs: _FailState): String = {
+         |    val off = math.max(0, math.min(input.length, fs.offset))
+         |    val pre = input.substring(0, off)
+         |    val line = pre.count(_ == '\\n') + 1
+         |    val col  = pre.reverseIterator.takeWhile(_ != '\\n').length + 1
+         |    val s0   = math.max(0, off - 30); val s1 = math.min(input.length, off + 30)
+         |    val frag = input.substring(s0, s1).replace('\\n', ' ').replace('\\r', ' ')
+         |    val ptr  = " " * (off - s0) + "^"
+         |    val exp  = if (fs.expected.isEmpty) "" else s"\\nexpected: $${fs.expected.distinct.mkString(", ")}"
+         |    val stk  = if (_ruleStack.get().isEmpty) "" else s"\\nin rule: $${_ruleStack.get().reverse.mkString(" > ")}"
+         |    s"parse error at $$line:$$col$$exp$$stk\\n$$frag\\n$$ptr"
+         |  }""".stripMargin
 
     val memoInfra = if (memoIdMap.nonEmpty) {
       val idDecls = memoIdMap.map { case (sym, id) =>
@@ -319,8 +395,9 @@ object ParserGenerator {
          |      case v => v.asInstanceOf[Option[(Any,Int)]]
          |    }
          |  }
-         |  def resetMemo(): Unit = _memoStore.get().clear()""".stripMargin
-    } else ""
+         |  def resetMemo(): Unit = { _memoStore.get().clear(); _failState.set(_FailState(0, Nil, false)); _ruleStack.set(Nil) }""".stripMargin
+    } else
+      s"  def resetMemo(): Unit = { _failState.set(_FailState(0, Nil, false)); _ruleStack.set(Nil) }"
 
     val helperSection  = helpers.map(h => s"  $h").mkString("\n")
     val preprocSection = preprocs.map(p => s"  $p").mkString("\n")
@@ -342,6 +419,8 @@ object ParserGenerator {
          |  }
          |  private def _applyAction(f: Any => Any, v: Any): Any = f(v)
          |
+         |$errorInfra
+         |
          |$memoInfra
          |$helperSection
          |$preprocSection
@@ -361,8 +440,8 @@ object ParserGenerator {
          |    val _in = $parseEntryInput
          |    $startMethod(_in, 0) match {
          |      case Some((result, pos)) if pos == _in.length => Right(result)
-         |      case Some((_, pos)) => Left(s"Unconsumed input at position $$pos")
-         |      case None => Left("Parse failed")
+         |      case Some((_, pos)) => _fail(pos, "end of input"); Left(_formatError(_in, _failState.get()))
+         |      case None => Left(_formatError(_in, _failState.get()))
          |    }
          |  }
          |}

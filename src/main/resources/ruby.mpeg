@@ -188,6 +188,7 @@ identifierNoSpace =
   => { case _ ~ name => name.asInstanceOf[String] } ;
 
 @memo
+@label("identifier")
 identifier =
   identifierNoSpace inlineSpacing
   => { case name ~ _ => name.asInstanceOf[String] } ;
@@ -325,6 +326,7 @@ floatLiteral =
   => { _ => FloatLiteral(0.0) } ;
 
 @memo
+@label("integer literal")
 integerLiteral =
   integerLiteralCore !("." [0-9]) numericSuffix? !identCont inlineSpacing
   => { _ => IntLiteral(BigInt(0)) } ;
@@ -358,6 +360,7 @@ dqStringChar =
   => { c => c.toString } ;
 
 @memo
+@label("string literal")
 stringLiteral =
   "\"" (escapedChar / interpolationSegment / dqStringChar)* "\"" inlineSpacing
   => { _ => StringLiteral("") } ;
@@ -767,6 +770,7 @@ dotSep =
 // ── Primary expression ───────────────────────────────────────────────────
 
 @memo
+@label("primary expression")
 primaryExpr =
   ( lambdaLiteral /
     singletonClassExpr /
@@ -1007,6 +1011,7 @@ assignmentExpr =
   ) => { v => if (v.isInstanceOf[Expr]) v.asInstanceOf[Expr] else NilLiteral() } ;
 
 @memo
+@label("expression")
 expr =
   assignmentExpr (("and" !identCont / "or" !identCont) spacing assignmentExpr)*
   => { case base ~ _ => base.asInstanceOf[Expr] } ;
@@ -1153,6 +1158,8 @@ defNamePart =
   (defReceiverPart "." spacing defMethodNamePart / defMethodNamePart)
   => { _ => "" } ;
 
+@label("method definition")
+@cut
 defStmt =
   ("private" !identCont spacing / "public" !identCont spacing / "protected" !identCont spacing / "ruby2_keywords" !identCont spacing)?
   "def" !identCont spacing
@@ -1178,6 +1185,8 @@ singletonClassStmt =
   statementSep* endKeyword callSuffix*
   => { _ => SingletonClassDef(NilLiteral(), List.empty) } ;
 
+@label("class definition")
+@cut
 classStmt =
   "class" !identCont spacing constPath
   ("<" !"<" spacing expr)?
@@ -1186,6 +1195,8 @@ classStmt =
   statementSep* endKeyword
   => { _ => ClassDef("", List.empty) } ;
 
+@label("module definition")
+@cut
 moduleStmt =
   "module" !identCont spacing constPath
   statementSep*
@@ -1193,6 +1204,8 @@ moduleStmt =
   statementSep* endKeyword
   => { _ => ModuleDef("", List.empty) } ;
 
+@label("while statement")
+@cut
 whileStmt =
   "while" !identCont spacing expr
   (("do" !identCont / "then" !identCont) spacing / inlineSpacing statementSep+)?
@@ -1201,6 +1214,8 @@ whileStmt =
   statementSep* endKeyword
   => { _ => WhileExpr(NilLiteral(), List.empty) } ;
 
+@label("until statement")
+@cut
 untilStmt =
   "until" !identCont spacing expr
   (("do" !identCont / "then" !identCont) spacing / inlineSpacing statementSep+)?
@@ -1213,6 +1228,8 @@ forBindingTarget =
   (multiAssignTargets / assignableTarget)
   => { _ => "" } ;
 
+@label("for statement")
+@cut
 forStmt =
   "for" !identCont spacing forBindingTarget spacing "in" !identCont spacing expr
   (("do" !identCont / "then" !identCont) spacing / inlineSpacing statementSep+)?
@@ -1221,6 +1238,8 @@ forStmt =
   statementSep* endKeyword
   => { _ => ForIn("", NilLiteral(), List.empty) } ;
 
+@label("begin block")
+@cut
 beginStmt =
   "begin" !identCont spacing
   statementSep*
@@ -1233,6 +1252,8 @@ beginStmt =
   endKeyword
   => { _ => ExprStmt(NilLiteral()) } ;
 
+@label("if statement")
+@cut
 ifStmt =
   "if" !identCont spacing expr
   ("then" !identCont spacing / inlineSpacing statementSep+ / inlineSpacing ";")
@@ -1243,6 +1264,8 @@ ifStmt =
   endKeyword
   => { _ => IfExpr(NilLiteral(), List.empty, List.empty) } ;
 
+@label("unless statement")
+@cut
 unlessStmt =
   "unless" !identCont spacing expr
   ("then" !identCont spacing / inlineSpacing statementSep+ / inlineSpacing ";")
@@ -1253,6 +1276,8 @@ unlessStmt =
   endKeyword
   => { _ => UnlessExpr(NilLiteral(), List.empty, List.empty) } ;
 
+@label("case statement")
+@cut
 caseStmt =
   "case" !identCont spacing expr? statementSep*
   whenClause+
@@ -1270,6 +1295,7 @@ exprStatement =
   => { case (e ~ _) ~ _ => ExprStmt(e.asInstanceOf[Expr]) } ;
 
 @memo
+@label("statement")
 statement =
   ( returnStmt /
     retryStmt /
