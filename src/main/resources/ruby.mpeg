@@ -62,6 +62,50 @@
     None
 };
 
+// Helper for O(n) scanning of percent literal bodies (avoids O(n^2) list building)
+%helper {
+  private def _scanBalancedBody(input: String, pos: Int, open: Char, close: Char): Option[(Any, Int)] = {
+    if (pos >= input.length || input.charAt(pos) != open) return None
+    var p = pos + 1; var depth = 1
+    while (p < input.length && depth > 0) {
+      val c = input.charAt(p)
+      if (c == '\\' && p + 1 < input.length) p += 2
+      else if (c == open) { depth += 1; p += 1 }
+      else if (c == close) { depth -= 1; p += 1 }
+      else p += 1
+    }
+    if (depth == 0) Some(("", p)) else None
+  }
+  private def _scanSimpleBody(input: String, pos: Int, delim: Char): Option[(Any, Int)] = {
+    if (pos >= input.length || input.charAt(pos) != delim) return None
+    var p = pos + 1
+    while (p < input.length && input.charAt(p) != delim) {
+      if (input.charAt(p) == '\\' && p + 1 < input.length) p += 2
+      else p += 1
+    }
+    if (p < input.length) Some(("", p + 1)) else None
+  }
+};
+
+%raw percentBodyBraces { _scanBalancedBody(input, pos, '{', '}') };
+%raw percentBodyParens { _scanBalancedBody(input, pos, '(', ')') };
+%raw percentBodyBrackets { _scanBalancedBody(input, pos, '[', ']') };
+%raw percentBodyAngles { _scanBalancedBody(input, pos, '<', '>') };
+%raw percentBodySimplePipe { _scanSimpleBody(input, pos, '|') };
+%raw percentBodySimplePercent { _scanSimpleBody(input, pos, '%') };
+%raw percentBodySimpleDoubleQuote { _scanSimpleBody(input, pos, '"') };
+%raw percentBodySimpleSingleQuote { _scanSimpleBody(input, pos, '\'') };
+%raw percentBodySimpleSlash { _scanSimpleBody(input, pos, '/') };
+%raw percentBodySimpleColon { _scanSimpleBody(input, pos, ':') };
+%raw percentBodySimpleExcl { _scanSimpleBody(input, pos, '!') };
+%raw percentBodySimpleComma { _scanSimpleBody(input, pos, ',') };
+%raw percentBodySimpleSemicolon { _scanSimpleBody(input, pos, ';') };
+%raw percentBodySimpleDash { _scanSimpleBody(input, pos, '-') };
+%raw percentBodySimpleUnderscore { _scanSimpleBody(input, pos, '_') };
+%raw percentBodySimpleEquals { _scanSimpleBody(input, pos, '=') };
+%raw percentBodySimplePlus { _scanSimpleBody(input, pos, '+') };
+
+
 
 // ── Higher-order combinators ─────────────────────────────────────────────
 
