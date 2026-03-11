@@ -49,7 +49,7 @@ CharacterClass<- '[' '^'? (!']' .)+ ']'
 - Parser generator backend (`codegen.ParserGenerator`) for first-order grammars, with interpreter-backed fallback for higher-order grammars
 - Combinator ergonomics: `label`, `cut`, `recover`, `trace`, and formatted failures
 - Debug expressions for inspecting matches
-- Ruby parser (`ruby.RubyParser`) achieving 100% parse success on the upstream Ruby test corpus (301/301 files), with full AST (`ruby.RubyAst`)
+- Ruby parser (`ruby.RubyParser`) achieving 100% parse success on the upstream Ruby test corpus (302/302 files), with full AST (`ruby.RubyAst`)
 
 ## Getting Started
 
@@ -105,7 +105,19 @@ import com.github.kmizu.macro_peg.codegen.ParserGenerator
 val source = ParserGenerator.generateFromSource("""S = "a" "b";""")
 ```
 
-For Ruby parsing:
+## Language Parsers
+
+| Language | Coverage | Approach |
+|----------|----------|----------|
+| Ruby 3.x | 302/302 files | Combinator (`RubyParser`, full AST) + Generated (`GeneratedRubyParser`, error reporting) |
+| Python   | planned  | |
+
+<details>
+<summary>Ruby</summary>
+
+### RubyParser — hand-written combinator parser
+
+Full AST (`ruby.RubyAst`), covering classes, modules, methods, blocks, pattern matching (`case/in`), heredocs, string interpolation, regex, percent literals, operator precedence, assignment variants, and more.
 
 ```scala
 import com.github.kmizu.macro_peg.ruby.RubyParser
@@ -113,17 +125,36 @@ import com.github.kmizu.macro_peg.ruby.RubyParser
 val astEither = RubyParser.parse("""class User; def greet(name); "hi"; end; end""")
 ```
 
-The Ruby parser achieves **100% parse success** (301/301 files) on the upstream Ruby test corpus (`test/ruby/` + `bootstraptest/`), covering the full Ruby 3.x surface syntax including classes, modules, methods, blocks, pattern matching (`case/in`), heredocs, string interpolation, regex, percent literals, operator precedence, assignment variants, and more.
+### GeneratedRubyParser — generated from `ruby.mpeg`
 
-To run Ruby upstream `.rb` corpus files against the current parser:
+Accepts/rejects Ruby source with structured error reporting (line:col + expected token + rule stack).
+
+```scala
+import com.github.kmizu.macro_peg.ruby.GeneratedRubyParser
+
+GeneratedRubyParser.parseAll("x = 1") match {
+  case Right(_)   => println("ok")
+  case Left(msg)  => println(msg)  // e.g. "parse error at 1:5\nexpected: ..."
+}
+```
+
+### Corpus setup (one-time)
 
 ```bash
 mkdir -p third_party/ruby3/upstream
 git clone --depth 1 --filter=blob:none --sparse https://github.com/ruby/ruby.git third_party/ruby3/upstream/ruby
 cd third_party/ruby3/upstream/ruby
 git sparse-checkout set test/ruby bootstraptest test/prism
-cd ../../..
+```
+
+### Running the corpus
+
+```bash
+# Combinator parser
 sbt "runMain com.github.kmizu.macro_peg.ruby.RubyCorpusRunner"
+
+# Generated parser
+sbt "runMain com.github.kmizu.macro_peg.ruby.GeneratedRubyCorpusRunner"
 ```
 
 Optional environment variables:
@@ -131,6 +162,15 @@ Optional environment variables:
 - `RUBY_CORPUS_TIMEOUT_MS` (default: `5000`)
 - `RUBY_CORPUS_FAIL_SAMPLES` (default: `20`)
 - `RUBY_CORPUS_FULL_ERROR` (`1` to print full formatted failures, default: first line only)
+
+</details>
+
+<details>
+<summary>Python (planned)</summary>
+
+Coming soon.
+
+</details>
 
 ## Release Note
 
