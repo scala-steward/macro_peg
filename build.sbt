@@ -77,9 +77,15 @@ credentials ++= {
   }
   val ivyCredentials   = Path.userHome / ".ivy2" / ".credentials"
   val mavenCredentials = Path.userHome / ".m2"   / "settings.xml"
-  (ivyCredentials.asFile, mavenCredentials.asFile) match {
+  val envCredentials = for {
+    u <- sys.env.get("SONATYPE_USERNAME")
+    p <- sys.env.get("SONATYPE_PASSWORD")
+  } yield Credentials(sonatype._1, sonatype._2, u, p)
+  envCredentials.toSeq ++ ((ivyCredentials.asFile, mavenCredentials.asFile) match {
     case (ivy, _) if ivy.canRead => Credentials(ivy) :: Nil
     case (_, mvn) if mvn.canRead => loadMavenCredentials(mvn)
     case _ => Nil
-  }
+  })
 }
+
+pgpPassphrase := sys.env.get("PGP_PASSPHRASE").map(_.toArray)
