@@ -51,7 +51,7 @@
           var end = after
           if (end < input.length && input.charAt(end) == '\r') end += 1
           if (end < input.length && input.charAt(end) == '\n') end += 1
-          return Some(("", end))
+          return Some((StringLiteral(""), end))
         }
       }
       // Advance to next line
@@ -121,7 +121,7 @@ SepBy1(elem, sep) =
 // Block body: parse statements until stop is ahead (stop not consumed)
 blockStatementsUntil(stop) =
   (!(stop) statement statementSep*)*
-  => { _ => List.empty[Statement] } ;
+  => { stmts => stmts.asInstanceOf[List[Any]].map { case _ ~ stmt ~ _ => stmt.asInstanceOf[Statement] } } ;
 
 // ── Lexical primitives ───────────────────────────────────────────────────
 
@@ -831,58 +831,58 @@ commandCallExpr =
 postfixExpr =
   (functionCallExpr / commandCallExpr / primaryExpr)
   callSuffix*
-  => { _ => NilLiteral() } ;
+  => { case base ~ _ => base.asInstanceOf[Expr] } ;
 
 // ── Operator precedence hierarchy ─────────────────────────────────────────
 
 @memo
 powerExpr =
   postfixExpr ("**" spacing powerExpr)?
-  => { _ => NilLiteral() } ;
+  => { case base ~ opt => opt.asInstanceOf[Option[Any]] match { case None => base.asInstanceOf[Expr]; case Some(_ ~ rhs) => BinaryOp(base.asInstanceOf[Expr], "**", rhs.asInstanceOf[Expr]) } } ;
 
 unaryOpSym =
   ("not" !identCont spacing / "!" / "~" / "-" / "+" / "*")
-  => { _ => "" } ;
+  => { v => v match { case (op ~ _) ~ _ => op.asInstanceOf[String]; case op => op.asInstanceOf[String] } } ;
 
 @memo
 unaryExpr =
   (unaryOpSym spacing unaryExpr / powerExpr)
-  => { _ => NilLiteral() } ;
+  => { v => v match { case (op ~ _) ~ e => UnaryOp(op.asInstanceOf[String], e.asInstanceOf[Expr]); case e => e.asInstanceOf[Expr] } } ;
 
 @memo
 mulDivExpr =
   unaryExpr (("*" !"=" / "/" !("=" / "}") / "%" !"=") spacing unaryExpr)*
-  => { _ => NilLiteral() } ;
+  => { case base ~ ops => ops.asInstanceOf[List[Any]].foldLeft(base.asInstanceOf[Expr]) { (acc, item) => { val ((op ~ _) ~ _) ~ rhs = item; BinaryOp(acc, op.asInstanceOf[String], rhs.asInstanceOf[Expr]) } } } ;
 
 @memo
 addSubExpr =
   mulDivExpr (("+" !("=" / "@") / "-" !("=" / "@" / ">")) spacing mulDivExpr)*
-  => { _ => NilLiteral() } ;
+  => { case base ~ ops => ops.asInstanceOf[List[Any]].foldLeft(base.asInstanceOf[Expr]) { (acc, item) => { val ((op ~ _) ~ _) ~ rhs = item; BinaryOp(acc, op.asInstanceOf[String], rhs.asInstanceOf[Expr]) } } } ;
 
 @memo
 shiftExpr =
   addSubExpr (("<<" / ">>") !"=" spacing addSubExpr)*
-  => { _ => NilLiteral() } ;
+  => { case base ~ ops => ops.asInstanceOf[List[Any]].foldLeft(base.asInstanceOf[Expr]) { (acc, item) => { val ((op ~ _) ~ _) ~ rhs = item; BinaryOp(acc, op.asInstanceOf[String], rhs.asInstanceOf[Expr]) } } } ;
 
 @memo
 bitAndExpr =
   shiftExpr ("&" !("&" / "=") spacing shiftExpr)*
-  => { _ => NilLiteral() } ;
+  => { case base ~ ops => ops.asInstanceOf[List[Any]].foldLeft(base.asInstanceOf[Expr]) { (acc, item) => { val ((op ~ _) ~ _) ~ rhs = item; BinaryOp(acc, op.asInstanceOf[String], rhs.asInstanceOf[Expr]) } } } ;
 
 @memo
 bitOrExpr =
   bitAndExpr (("|" !("=" / "|") / "^" !"=") spacing bitAndExpr)*
-  => { _ => NilLiteral() } ;
+  => { case base ~ ops => ops.asInstanceOf[List[Any]].foldLeft(base.asInstanceOf[Expr]) { (acc, item) => { val ((op ~ _) ~ _) ~ rhs = item; BinaryOp(acc, op.asInstanceOf[String], rhs.asInstanceOf[Expr]) } } } ;
 
 @memo
 relationalExpr =
   bitOrExpr (("<=" / ">=" / "<" !("<" / "=") / ">" !(">" / "=")) spacing bitOrExpr)*
-  => { _ => NilLiteral() } ;
+  => { case base ~ ops => ops.asInstanceOf[List[Any]].foldLeft(base.asInstanceOf[Expr]) { (acc, item) => item match { case ((op ~ _) ~ _) ~ rhs => BinaryOp(acc, op.asInstanceOf[String], rhs.asInstanceOf[Expr]); case (op ~ _) ~ rhs => BinaryOp(acc, op.asInstanceOf[String], rhs.asInstanceOf[Expr]) } } } ;
 
 @memo
 equalityExpr =
   relationalExpr (("===" / "<=>" / "=~" / "!~" / "!=" / "==") spacing relationalExpr)*
-  => { _ => NilLiteral() } ;
+  => { case base ~ ops => ops.asInstanceOf[List[Any]].foldLeft(base.asInstanceOf[Expr]) { (acc, item) => { val (op ~ _) ~ rhs = item; BinaryOp(acc, op.asInstanceOf[String], rhs.asInstanceOf[Expr]) } } } ;
 
 rangeOp =
   ("..." / "..") => { s => s } ;
@@ -891,17 +891,17 @@ rangeOp =
 rangeExpr =
   ( (rangeOp spacing equalityExpr) /
     (equalityExpr (rangeOp spacing equalityExpr?)?)
-  ) => { _ => NilLiteral() } ;
+  ) => { v => v match { case (op ~ _) ~ rhs => RangeExpr(NilLiteral(), rhs.asInstanceOf[Expr], op == "..."); case base ~ None => base.asInstanceOf[Expr]; case base ~ Some(v2) => { val (op ~ _) ~ endOpt = v2; RangeExpr(base.asInstanceOf[Expr], endOpt.asInstanceOf[Option[Any]].map(_.asInstanceOf[Expr]).getOrElse(NilLiteral()), op == "...") } } } ;
 
 @memo
 andExpr =
   rangeExpr ("&&" !"=" spacing rangeExpr)*
-  => { _ => NilLiteral() } ;
+  => { case base ~ ops => ops.asInstanceOf[List[Any]].foldLeft(base.asInstanceOf[Expr]) { (acc, item) => { val ((op ~ _) ~ _) ~ rhs = item; BinaryOp(acc, op.asInstanceOf[String], rhs.asInstanceOf[Expr]) } } } ;
 
 @memo
 orExpr =
   andExpr ("||" !"=" spacing andExpr)*
-  => { _ => NilLiteral() } ;
+  => { case base ~ ops => ops.asInstanceOf[List[Any]].foldLeft(base.asInstanceOf[Expr]) { (acc, item) => { val ((op ~ _) ~ _) ~ rhs = item; BinaryOp(acc, op.asInstanceOf[String], rhs.asInstanceOf[Expr]) } } } ;
 
 // Pattern expressions
 inPatternPrimary =
@@ -945,12 +945,12 @@ inPatternExpr =
 
 inMatchExpr =
   orExpr ("in" !identCont spacing inPatternExpr)?
-  => { _ => NilLiteral() } ;
+  => { case base ~ _ => base.asInstanceOf[Expr] } ;
 
 @memo
 conditionalExpr =
   inMatchExpr (spacing "?" spacing conditionalExpr spacing ":" !":" spacing conditionalExpr)?
-  => { _ => NilLiteral() } ;
+  => { case base ~ _ => base.asInstanceOf[Expr] } ;
 
 // ── Assignment expressions ─────────────────────────────────────────────────
 
@@ -960,7 +960,7 @@ compoundAssignOp =
 
 assignableTarget =
   (instanceVarExpr / classVarExpr / globalVarExpr / constRef / localVarExpr)
-  => { _ => NilLiteral() } ;
+  => { v => v.asInstanceOf[Expr] } ;
 
 assignValueExpr =
   ("*" spacing conditionalExpr / conditionalExpr) (spacing "," spacing ("*" spacing conditionalExpr / conditionalExpr))*
@@ -978,7 +978,7 @@ chainedAssignRhs =
     (assignableTarget ("||=" / "&&=") spacing chainedAssignRhs) /
     (assignableTarget assignEq spacing chainedAssignRhs) /
     conditionalExpr
-  ) => { _ => NilLiteral() } ;
+  ) => { v => if (v.isInstanceOf[Expr]) v.asInstanceOf[Expr] else NilLiteral() } ;
 
 multiAssignElem =
   ( ("*" spacing assignableTarget?) /
@@ -1004,12 +1004,12 @@ assignmentExpr =
     (assignableTarget ("||=" / "&&=") spacing chainedAssignRhs) /
     (assignableTarget assignEq spacing assignValueExpr) /
     conditionalExpr
-  ) => { _ => NilLiteral() } ;
+  ) => { v => if (v.isInstanceOf[Expr]) v.asInstanceOf[Expr] else NilLiteral() } ;
 
 @memo
 expr =
   assignmentExpr (("and" !identCont / "or" !identCont) spacing assignmentExpr)*
-  => { _ => NilLiteral() } ;
+  => { case base ~ _ => base.asInstanceOf[Expr] } ;
 
 // ── Inline expression-forms of compound statements ────────────────────────
 
@@ -1267,7 +1267,7 @@ rightwardAssignStmt =
 exprStatement =
   expr (spacing1 commandArgs)?
   inlineSpacing
-  => { _ => ExprStmt(NilLiteral()) } ;
+  => { case (e ~ _) ~ _ => ExprStmt(e.asInstanceOf[Expr]) } ;
 
 @memo
 statement =
@@ -1291,7 +1291,7 @@ statement =
     rightwardAssignStmt /
     exprStatement
   ) (inlineSpacing modifierSuffix)*
-  => { _ => ExprStmt(NilLiteral()) } ;
+  => { case stmt ~ _ => stmt.asInstanceOf[Statement] } ;
 
 // ── Top-level program ─────────────────────────────────────────────────────
 
@@ -1301,8 +1301,8 @@ endDataSection =
 
 topLevelStatements =
   statementSep* (!(endDataSection) statement (statementSep+ !(endDataSection) statement)*)? statementSep*
-  => { _ => List.empty[Statement] } ;
+  => { v => { val (_ ~ opt) ~ _ = v; opt.asInstanceOf[Option[Any]] match { case None => List.empty[Statement]; case Some(inner) => { val (_ ~ first) ~ rest = inner; first.asInstanceOf[Statement] :: rest.asInstanceOf[List[Any]].map { case _ ~ stmt => stmt.asInstanceOf[Statement] } } } } } ;
 
 program =
   spacing ~> topLevelStatements <~ spacing <~ endDataSection?
-  => { _ => Program(List.empty) } ;
+  => { stmts => Program(stmts.asInstanceOf[List[Statement]]) } ;
